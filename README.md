@@ -1,47 +1,64 @@
 # secssh
 
+**English** | [中文](./README.zh-CN.md)
+
 `secssh` is an encrypted SSH workspace manager built with Go.
 
-It stores your SSH config, private keys, and secrets in an encrypted vault, while delegating all SSH protocol behavior to system OpenSSH.
+It keeps your SSH config, private keys, and optional secrets in an encrypted vault, then hands off actual connection behavior to system OpenSSH.
 
-## Features
+## Why secssh
 
-- Encrypted vault storage (`~/.secssh/vault.enc`) for:
+Managing SSH access usually means scattering `ssh_config`, keys, and passwords across local files. `secssh` puts them behind one vault and gives you a consistent CLI for host, key, and auth workflows without replacing OpenSSH.
+
+## Highlights
+
+- Encrypted vault storage in `~/.secssh/vault.enc` for:
   - full `ssh_config`
   - private keys
-  - key public parts (for key copy workflows)
+  - public key parts for key-copy workflows
   - secrets/passwords
-  - host auth policy and host machine metadata
+  - per-host auth policy and metadata
   - host connection history
-- Crypto:
-  - KDF: `argon2id` (default), `pbkdf2-sha256`
-  - Cipher: `aes-256-gcm` (default), `xchacha20-poly1305`
-  - full re-encryption on password/crypto change
-  - atomic writes (`tmp` -> `fsync` -> `rename`)
 - OpenSSH-compatible runtime:
   - no custom SSH protocol implementation
-  - runtime temp config and temp key materialization
+  - generates temporary config and key files at runtime
   - supports `IdentityFile secssh://keys/<name>` indirection
+- Flexible crypto:
+  - KDF: `argon2id` (default), `pbkdf2-sha256`
+  - Cipher: `aes-256-gcm` (default), `xchacha20-poly1305`
+  - full re-encryption on password or crypto changes
 - Host and auth management:
-  - managed host aliases (`host add/rm/list`)
-  - per-host auth policy (`key|password|auto|ask`)
-  - optional password policies (`stored|prompt|session`)
+  - managed host aliases with `host add/rm/list`
+  - per-host auth mode: `key`, `password`, `auto`, `ask`
+  - optional password policy: `stored`, `prompt`, `session`
 - Interactive shell:
   - run `secssh` directly for `secssh>` mode
   - TAB completion
-  - `Ctrl-C` interrupts current input (does not exit)
-  - `Ctrl-D` exits shell
+  - `Ctrl-C` interrupts current input without exiting
+  - `Ctrl-D` exits the shell
+
+## How It Works
+
+`secssh` does not implement SSH itself. Instead, it:
+
+1. unlocks and decrypts your vault
+2. materializes temporary config and key files when needed
+3. resolves host auth policy and runtime options
+4. invokes system `ssh`
+5. cleans up temporary artifacts
+
+That keeps runtime behavior close to standard OpenSSH while centralizing sensitive material.
 
 ## Requirements
 
 - Go `1.24+`
 - OpenSSH client tools (`ssh`)
-- `ssh-keygen` (for `key gen` and related workflows)
+- `ssh-keygen` for `key gen` and related workflows
 - Linux/macOS preferred
 
 ## Build
 
-Use Make targets:
+Use the provided Make targets:
 
 ```bash
 make build
@@ -50,14 +67,14 @@ make build-one PLATFORM=linux/amd64 VERSION=v0.1.0
 make build-cross VERSION=v0.1.0
 ```
 
-Output:
+Build outputs:
 
 - local build: `bin/secssh-<version>`
 - cross builds: `dist/secssh-<version>-<os>-<arch>[.exe]`
 
 ## Quick Start
 
-Initialize/unlock vault:
+Initialize or unlock the vault:
 
 ```bash
 secssh unlock
@@ -69,21 +86,21 @@ Add a managed host:
 secssh host add prod --hostname 10.0.0.10 --user root --port 22
 ```
 
-Generate and copy key to host:
+Generate a key and copy it to the host:
 
 ```bash
 secssh key gen prod-key
 secssh key copy prod-key prod
 ```
 
-Set host auth mode and connect:
+Set the host auth mode and connect:
 
 ```bash
 secssh host auth set prod --mode key
 secssh ssh prod
 ```
 
-Inspect host records/history:
+Inspect stored hosts and history:
 
 ```bash
 secssh host list
@@ -125,9 +142,10 @@ secssh crypto set --kdf <name> --cipher <name>
 ## Security Notes
 
 - Secrets and private keys are encrypted at rest in the vault.
-- Runtime key files are materialized with restrictive permissions and cleaned up.
 - Vault writes are atomic to reduce corruption risk.
-- Sensitive values are not intended to be logged.
+- Runtime key files use restrictive permissions and are cleaned up after use.
+- Sensitive values are not intended to be exposed in logs.
+- Password and crypto changes trigger full vault re-encryption.
 
 ## Project Docs
 
@@ -136,5 +154,5 @@ secssh crypto set --kdf <name> --cipher <name>
 
 ## Status
 
-Project is functional for core workflows and actively evolving.
+The core workflows are functional and the project is still evolving.
 Issues and pull requests are welcome.
