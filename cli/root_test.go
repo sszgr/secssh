@@ -32,7 +32,7 @@ func TestParseVaultArgEqualsForm(t *testing.T) {
 }
 
 func TestSplitSSHArgsOnlyRunnerFlags(t *testing.T) {
-	runnerArgs, passArgs := splitSSHArgs([]string{"--auth", "password", "--prompt"})
+	runnerArgs, passArgs := splitTransportArgs([]string{"--auth", "password", "--prompt"})
 	wantRunner := []string{"--auth", "password", "--prompt"}
 	if !reflect.DeepEqual(runnerArgs, wantRunner) {
 		t.Fatalf("unexpected runner args: got=%v want=%v", runnerArgs, wantRunner)
@@ -43,7 +43,7 @@ func TestSplitSSHArgsOnlyRunnerFlags(t *testing.T) {
 }
 
 func TestSplitSSHArgsWithPassthrough(t *testing.T) {
-	runnerArgs, passArgs := splitSSHArgs([]string{"--auth", "key", "--", "-p", "2222", "-o", "StrictHostKeyChecking=no"})
+	runnerArgs, passArgs := splitTransportArgs([]string{"--auth", "key", "--", "-p", "2222", "-o", "StrictHostKeyChecking=no"})
 	wantRunner := []string{"--auth", "key"}
 	wantPass := []string{"-p", "2222", "-o", "StrictHostKeyChecking=no"}
 
@@ -56,12 +56,38 @@ func TestSplitSSHArgsWithPassthrough(t *testing.T) {
 }
 
 func TestSplitSSHArgsLeadingPassthroughSeparator(t *testing.T) {
-	runnerArgs, passArgs := splitSSHArgs([]string{"--", "-vvv"})
+	runnerArgs, passArgs := splitTransportArgs([]string{"--", "-vvv"})
 	if len(runnerArgs) != 0 {
 		t.Fatalf("expected no runner args, got=%v", runnerArgs)
 	}
 	wantPass := []string{"-vvv"}
 	if !reflect.DeepEqual(passArgs, wantPass) {
 		t.Fatalf("unexpected pass args: got=%v want=%v", passArgs, wantPass)
+	}
+}
+
+func TestParseTransportArgsInterspersedFlags(t *testing.T) {
+	parsed, err := parseTransportArgs([]string{"src.txt", "--auth", "password", "--prompt", "prod:/tmp/dst.txt", "--", "-P", "2222"}, 2)
+	if err != nil {
+		t.Fatalf("parseTransportArgs failed: %v", err)
+	}
+	if !reflect.DeepEqual(parsed.Targets, []string{"src.txt", "prod:/tmp/dst.txt"}) {
+		t.Fatalf("unexpected targets: %v", parsed.Targets)
+	}
+	if parsed.AuthMode != "password" || !parsed.Prompt {
+		t.Fatalf("unexpected auth flags: %+v", parsed)
+	}
+	if !reflect.DeepEqual(parsed.PassArgs, []string{"-P", "2222"}) {
+		t.Fatalf("unexpected pass args: %v", parsed.PassArgs)
+	}
+}
+
+func TestResolveSCPRemoteTarget(t *testing.T) {
+	target, err := resolveSCPRemoteTarget("local.txt", "root@prod:/tmp/remote.txt")
+	if err != nil {
+		t.Fatalf("resolveSCPRemoteTarget failed: %v", err)
+	}
+	if target != "prod" {
+		t.Fatalf("unexpected target: %s", target)
 	}
 }

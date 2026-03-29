@@ -6,6 +6,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"net/url"
 	"os"
 	"sort"
 	"strings"
@@ -111,6 +112,26 @@ func newRootCommand(app *workspace.SessionManager, ref vaultRef) *cobra.Command 
 		},
 	}
 	root.AddCommand(sshCmd)
+
+	scpCmd := &cobra.Command{
+		Use:                "scp <src> <dst> [-- [scp args...]]",
+		Short:              "Run scp through secssh workspace",
+		DisableFlagParsing: true,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return codeErr(cmdSCP(args, app, ref))
+		},
+	}
+	root.AddCommand(scpCmd)
+
+	sftpCmd := &cobra.Command{
+		Use:                "sftp <target> [-- [sftp args...]]",
+		Short:              "Run sftp through secssh workspace",
+		DisableFlagParsing: true,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return codeErr(cmdSFTP(args, app, ref))
+		},
+	}
+	root.AddCommand(sftpCmd)
 
 	configCmd := &cobra.Command{Use: "config", Short: "Manage ssh_config in vault"}
 	configCmd.AddCommand(&cobra.Command{
@@ -316,10 +337,12 @@ func newRootCommand(app *workspace.SessionManager, ref vaultRef) *cobra.Command 
 
 func usage() {
 	fmt.Println(`secssh command list:
-  secssh unlock
+ secssh unlock
   secssh lock
   secssh status
   secssh ssh <target> -- [ssh args...]
+  secssh scp <src> <dst> -- [scp args...]
+  secssh sftp <target> -- [sftp args...]
   secssh config set --file <path>
   secssh config show
   secssh key add <name> --file <private_key>
@@ -404,72 +427,93 @@ func cmdStatus(mgr *workspace.SessionManager) int {
 }
 
 func cmdSSH(args []string, mgr *workspace.SessionManager, ref vaultRef) int {
-	if len(args) == 0 {
-		fmt.Fprintln(os.Stderr, "usage: secssh ssh <target> -- [ssh args...]")
+	parsed, err := parseTransportArgs(args, 1)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "usage: secssh ssh <target> [--auth ... --prompt --use-secret ...] -- [ssh args...]")
 		return 2
 	}
-	if err := mgr.RequireUnlocked(); err != nil {
-		fmt.Fprintf(os.Stderr, "ssh failed: %v\n", err)
-		return 1
-	}
-
-	target := strings.TrimSpace(args[0])
-	sshArgs, rest := splitSSHArgs(args[1:])
-	fs := flag.NewFlagSet("ssh", flag.ContinueOnError)
-	auth := fs.String("auth", "", "auth override: key|password|auto|ask")
-	prompt := fs.Bool("prompt", false, "prompt password for this run")
-	useSecret := fs.String("use-secret", "", "secret name for password mode")
-	if err := fs.Parse(sshArgs); err != nil {
-		return 2
-	}
-	if *auth != "" {
-		if _, err := host.ParseAuthMode(*auth); err != nil {
-			return usageErr(err.Error())
-		}
-	}
-
-	header, payload, password, err := loadVaultInteractive(ref)
-	if err != nil {
-		return cmdErr("ssh", err)
-	}
-	exp, err := mgr.ExpiresAt()
-	if err != nil {
-		exp = time.Time{}
-	}
-	runPayload := *payload
-	runPayload.SSHConfig = mergeManagedHostsConfig(payload.SSHConfig, payload.Machines)
-
-	if err := runner.RunSSH(runner.Options{
-		Target:     target,
-		AuthMode:   *auth,
-		Prompt:     *prompt,
-		UseSecret:  strings.TrimSpace(*useSecret),
-		PassArgs:   rest,
-		Vault:      &runPayload,
-		VaultPath:  ref.Path,
-		SessionExp: exp.Unix(),
-	}); err != nil {
-		fmt.Fprintf(os.Stderr, "ssh failed: %v\n", err)
-		return 1
-	}
-	if ref.ReadOnly {
-		fmt.Fprintln(os.Stderr, "warning: remote vault is read-only; connection history was not persisted")
-		return 0
-	}
-	recordHostConnection(payload, target, resolveAuthModeForRecord(payload, target, *auth))
-	if err := saveVault(ref, password, header, payload); err != nil {
-		return cmdErr("ssh", err)
-	}
-	return 0
+	return runRemoteCommand("ssh", mgr, ref, parsed, func(opts runner.Options) error {
+		return runner.RunSSH(opts)
+	})
 }
 
-func splitSSHArgs(args []string) (runnerArgs []string, passArgs []string) {
+func splitTransportArgs(args []string) (runnerArgs []string, passArgs []string) {
 	for i, v := range args {
 		if v == "--" {
 			return args[:i], args[i+1:]
 		}
 	}
 	return args, nil
+}
+
+type transportArgs struct {
+	Targets   []string
+	AuthMode  string
+	Prompt    bool
+	UseSecret string
+	PassArgs  []string
+}
+
+func parseTransportArgs(args []string, targetCount int) (*transportArgs, error) {
+	runnerArgs, passArgs := splitTransportArgs(args)
+	parsed := &transportArgs{PassArgs: passArgs}
+	for i := 0; i < len(runnerArgs); i++ {
+		arg := runnerArgs[i]
+		switch arg {
+		case "--auth":
+			if i+1 >= len(runnerArgs) {
+				return nil, errors.New("--auth requires a value")
+			}
+			parsed.AuthMode = runnerArgs[i+1]
+			i++
+		case "--prompt":
+			parsed.Prompt = true
+		case "--use-secret":
+			if i+1 >= len(runnerArgs) {
+				return nil, errors.New("--use-secret requires a value")
+			}
+			parsed.UseSecret = runnerArgs[i+1]
+			i++
+		default:
+			parsed.Targets = append(parsed.Targets, arg)
+		}
+	}
+	if len(parsed.Targets) != targetCount {
+		return nil, fmt.Errorf("expected %d target arguments", targetCount)
+	}
+	if parsed.AuthMode != "" {
+		if _, err := host.ParseAuthMode(parsed.AuthMode); err != nil {
+			return nil, err
+		}
+	}
+	return parsed, nil
+}
+
+func cmdSFTP(args []string, mgr *workspace.SessionManager, ref vaultRef) int {
+	parsed, err := parseTransportArgs(args, 1)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "usage: secssh sftp <target> [--auth ... --prompt --use-secret ...] -- [sftp args...]")
+		return 2
+	}
+	return runRemoteCommand("sftp", mgr, ref, parsed, func(opts runner.Options) error {
+		return runner.RunSFTP(opts, parsed.Targets[0])
+	})
+}
+
+func cmdSCP(args []string, mgr *workspace.SessionManager, ref vaultRef) int {
+	parsed, err := parseTransportArgs(args, 2)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "usage: secssh scp <src> <dst> [--auth ... --prompt --use-secret ...] -- [scp args...]")
+		return 2
+	}
+	target, err := resolveSCPRemoteTarget(parsed.Targets[0], parsed.Targets[1])
+	if err != nil {
+		return cmdErr("scp", err)
+	}
+	parsed.Targets = []string{target, parsed.Targets[0], parsed.Targets[1]}
+	return runRemoteCommand("scp", mgr, ref, parsed, func(opts runner.Options) error {
+		return runner.RunSCP(opts, parsed.Targets[1], parsed.Targets[2])
+	})
 }
 
 func cmdConfig(args []string, ref vaultRef) int {
@@ -515,6 +559,47 @@ func cmdConfig(args []string, ref vaultRef) int {
 	default:
 		return usageErr("usage: secssh config set|show")
 	}
+}
+
+func runRemoteCommand(op string, mgr *workspace.SessionManager, ref vaultRef, parsed *transportArgs, invoke func(opts runner.Options) error) int {
+	if err := mgr.RequireUnlocked(); err != nil {
+		fmt.Fprintf(os.Stderr, "%s failed: %v\n", op, err)
+		return 1
+	}
+	target := strings.TrimSpace(parsed.Targets[0])
+	header, payload, password, err := loadVaultInteractive(ref)
+	if err != nil {
+		return cmdErr(op, err)
+	}
+	exp, err := mgr.ExpiresAt()
+	if err != nil {
+		exp = time.Time{}
+	}
+	runPayload := *payload
+	runPayload.SSHConfig = mergeManagedHostsConfig(payload.SSHConfig, payload.Machines)
+
+	if err := invoke(runner.Options{
+		Target:     target,
+		AuthMode:   parsed.AuthMode,
+		Prompt:     parsed.Prompt,
+		UseSecret:  strings.TrimSpace(parsed.UseSecret),
+		PassArgs:   parsed.PassArgs,
+		Vault:      &runPayload,
+		VaultPath:  ref.Path,
+		SessionExp: exp.Unix(),
+	}); err != nil {
+		fmt.Fprintf(os.Stderr, "%s failed: %v\n", op, err)
+		return 1
+	}
+	if ref.ReadOnly {
+		fmt.Fprintf(os.Stderr, "warning: remote vault is read-only; connection history was not persisted\n")
+		return 0
+	}
+	recordHostConnection(payload, target, resolveAuthModeForRecord(payload, target, parsed.AuthMode))
+	if err := saveVault(ref, password, header, payload); err != nil {
+		return cmdErr(op, err)
+	}
+	return 0
 }
 
 func cmdKey(args []string, ref vaultRef) int {
@@ -1152,6 +1237,54 @@ func buildInstallAuthorizedKeyCommand(pub string) string {
 	quoted := shellSingleQuote(key)
 	return "umask 077; mkdir -p ~/.ssh; touch ~/.ssh/authorized_keys; grep -qxF " + quoted +
 		" ~/.ssh/authorized_keys || printf '%s\\n' " + quoted + " >> ~/.ssh/authorized_keys"
+}
+
+func resolveSCPRemoteTarget(src, dst string) (string, error) {
+	srcHost, srcRemote := remoteHostFromSpec(src)
+	dstHost, dstRemote := remoteHostFromSpec(dst)
+	switch {
+	case srcRemote && !dstRemote:
+		return srcHost, nil
+	case !srcRemote && dstRemote:
+		return dstHost, nil
+	case srcRemote && dstRemote && srcHost == dstHost:
+		return srcHost, nil
+	case srcRemote || dstRemote:
+		return "", errors.New("scp currently supports one remote endpoint, or the same remote alias on both sides")
+	default:
+		return "", errors.New("scp requires at least one remote endpoint")
+	}
+}
+
+func remoteHostFromSpec(spec string) (string, bool) {
+	spec = strings.TrimSpace(spec)
+	if spec == "" {
+		return "", false
+	}
+	if strings.HasPrefix(spec, "scp://") {
+		u, err := url.Parse(spec)
+		if err != nil || strings.TrimSpace(u.Host) == "" {
+			return "", false
+		}
+		host := u.Hostname()
+		return strings.TrimSpace(host), host != ""
+	}
+	if strings.HasPrefix(spec, "-") || strings.HasPrefix(spec, "/") || strings.HasPrefix(spec, "./") || strings.HasPrefix(spec, "../") {
+		return "", false
+	}
+	colon := strings.Index(spec, ":")
+	if colon <= 0 {
+		return "", false
+	}
+	head := spec[:colon]
+	if strings.Contains(head, "/") {
+		return "", false
+	}
+	if at := strings.LastIndex(head, "@"); at >= 0 {
+		head = head[at+1:]
+	}
+	head = strings.TrimSpace(head)
+	return head, head != ""
 }
 
 func shellSingleQuote(s string) string {

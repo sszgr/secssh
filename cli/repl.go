@@ -221,7 +221,7 @@ func completionCandidates(path []string, current string) []string {
 	base := []string{}
 	switch len(path) {
 	case 0:
-		base = []string{"unlock", "lock", "status", "ssh", "config", "key", "secret", "host", "passwd", "crypto", "help", "exit", "quit"}
+		base = []string{"unlock", "lock", "status", "ssh", "scp", "sftp", "config", "key", "secret", "host", "passwd", "crypto", "help", "exit", "quit"}
 	case 1:
 		switch path[0] {
 		case "config":
@@ -235,6 +235,10 @@ func completionCandidates(path []string, current string) []string {
 		case "crypto":
 			base = []string{"show", "set"}
 		case "ssh":
+			base = []string{"--auth", "--prompt", "--use-secret", "--"}
+		case "scp":
+			base = []string{"--auth", "--prompt", "--use-secret", "--"}
+		case "sftp":
 			base = []string{"--auth", "--prompt", "--use-secret", "--"}
 		}
 	case 2:

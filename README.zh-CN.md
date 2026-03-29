@@ -80,6 +80,13 @@ make build-cross VERSION=v0.1.0
 secssh --vault https://example.com/vault.enc status
 ```
 
+也可以通过同一套 vault 管理的运行时直接使用 `scp` 和 `sftp`：
+
+```bash
+secssh scp local.txt prod:/tmp/local.txt
+secssh sftp prod
+```
+
 初始化或解锁保险库：
 
 ```bash
@@ -122,6 +129,8 @@ secssh lock
 secssh status
 
 secssh ssh <target> -- [ssh args...]
+secssh scp <src> <dst> -- [scp args...]
+secssh sftp <target> -- [sftp args...]
 
 secssh config set --file <path>
 secssh config show

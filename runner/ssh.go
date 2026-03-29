@@ -17,6 +17,20 @@ import (
 )
 
 func RunSSH(opts Options) error {
+	return runOpenSSHProgram("ssh", opts, opts.Target, buildSSHInvocation)
+}
+
+func RunSFTP(opts Options, target string) error {
+	return runOpenSSHProgram("sftp", opts, target, buildSFTPInvocation)
+}
+
+func RunSCP(opts Options, src, dst string) error {
+	return runOpenSSHProgram("scp", opts, "", func(configPath string, opts Options, password, askpassPath string, baseEnv []string) ([]string, []string, bool) {
+		return buildSCPInvocation(configPath, src, dst, opts.PassArgs, password, askpassPath, baseEnv)
+	})
+}
+
+func runOpenSSHProgram(program string, opts Options, runtimeTarget string, build buildInvocationFunc) error {
 	if opts.Vault == nil {
 		return errors.New("vault payload is required")
 	}
@@ -57,14 +71,14 @@ func RunSSH(opts Options) error {
 		return err
 	}
 
-	args, env, useAskPass := buildSSHInvocation(configPath, opts.Target, opts.PassArgs, password, filepath.Join(runDir, "askpass.sh"), os.Environ())
+	args, env, useAskPass := build(configPath, opts, password, filepath.Join(runDir, "askpass.sh"), os.Environ())
 	if useAskPass {
 		script := "#!/bin/sh\nprintf '%s' \"$SECSSH_SSH_PASSWORD\"\n"
 		if err := os.WriteFile(filepath.Join(runDir, "askpass.sh"), []byte(script), 0o700); err != nil {
 			return err
 		}
 	}
-	cmd := exec.Command("ssh", args...)
+	cmd := exec.Command(program, args...)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	cmd.Stdin = os.Stdin
@@ -79,8 +93,22 @@ func RunSSH(opts Options) error {
 	return cmd.Run()
 }
 
-func buildSSHInvocation(configPath, target string, passArgs []string, password, askpassPath string, baseEnv []string) (args []string, env []string, useAskPass bool) {
-	args = append([]string{"-F", configPath, target}, passArgs...)
+type buildInvocationFunc func(configPath string, opts Options, password, askpassPath string, baseEnv []string) (args []string, env []string, useAskPass bool)
+
+func buildSSHInvocation(configPath string, opts Options, password, askpassPath string, baseEnv []string) (args []string, env []string, useAskPass bool) {
+	return buildAskpassInvocation([]string{"-F", configPath, opts.Target}, opts.PassArgs, password, askpassPath, baseEnv)
+}
+
+func buildSFTPInvocation(configPath string, opts Options, password, askpassPath string, baseEnv []string) (args []string, env []string, useAskPass bool) {
+	return buildAskpassInvocation([]string{"-F", configPath}, append(opts.PassArgs, opts.Target), password, askpassPath, baseEnv)
+}
+
+func buildSCPInvocation(configPath, src, dst string, passArgs []string, password, askpassPath string, baseEnv []string) (args []string, env []string, useAskPass bool) {
+	return buildAskpassInvocation([]string{"-F", configPath}, append(append([]string{}, passArgs...), src, dst), password, askpassPath, baseEnv)
+}
+
+func buildAskpassInvocation(prefix, suffix []string, password, askpassPath string, baseEnv []string) (args []string, env []string, useAskPass bool) {
+	args = append(append([]string{}, prefix...), suffix...)
 	env = append([]string{}, baseEnv...)
 	if password == "" {
 		return args, env, false

@@ -80,6 +80,13 @@ Use the default local vault, or point `secssh` at a custom vault source with `--
 secssh --vault https://example.com/vault.enc status
 ```
 
+Copy files with `scp` or open an `sftp` session through the same vault-managed runtime:
+
+```bash
+secssh scp local.txt prod:/tmp/local.txt
+secssh sftp prod
+```
+
 Initialize or unlock the vault:
 
 ```bash
@@ -122,6 +129,8 @@ secssh lock
 secssh status
 
 secssh ssh <target> -- [ssh args...]
+secssh scp <src> <dst> -- [scp args...]
+secssh sftp <target> -- [sftp args...]
 
 secssh config set --file <path>
 secssh config show
