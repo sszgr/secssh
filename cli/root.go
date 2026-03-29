@@ -22,22 +22,38 @@ import (
 	"golang.org/x/term"
 )
 
-func Run(args []string) int {
-	vaultPath, err := vault.DefaultPath()
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "resolve vault path failed: %v\n", err)
-		return 1
-	}
-	workspace.CleanupRuntimeArtifacts()
-	app := workspace.NewSessionManager(vaultPath, 10*time.Minute)
-	if len(args) == 0 {
-		return runREPL(app, vaultPath)
-	}
-	return runCommand(args, app, vaultPath)
+type vaultRef struct {
+	Source   string
+	Path     string
+	ReadOnly bool
 }
 
-func runCommand(args []string, app *workspace.SessionManager, vaultPath string) int {
-	root := newRootCommand(app, vaultPath)
+func Run(args []string) int {
+	args, sourceArg, err := parseVaultArg(args)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 2
+	}
+	source, err := vault.ResolveSource(sourceArg)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "resolve vault source failed: %v\n", err)
+		return 1
+	}
+	ref := vaultRef{
+		Source:   source.Input,
+		Path:     source.Path,
+		ReadOnly: source.ReadOnly,
+	}
+	workspace.CleanupRuntimeArtifacts()
+	app := workspace.NewSessionManager(ref.Source, 10*time.Minute)
+	if len(args) == 0 {
+		return runREPL(app, ref)
+	}
+	return runCommand(args, app, ref)
+}
+
+func runCommand(args []string, app *workspace.SessionManager, ref vaultRef) int {
+	root := newRootCommand(app, ref)
 	root.SetArgs(args)
 	root.SilenceUsage = true
 	root.SilenceErrors = true
@@ -63,16 +79,17 @@ func codeErr(code int) error {
 	return &cliCodeError{code: code}
 }
 
-func newRootCommand(app *workspace.SessionManager, vaultPath string) *cobra.Command {
+func newRootCommand(app *workspace.SessionManager, ref vaultRef) *cobra.Command {
 	root := &cobra.Command{
 		Use:   "secssh",
 		Short: "Encrypted closed SSH workspace manager",
 	}
+	root.PersistentFlags().String("vault", "", "vault file path or remote http(s) URL")
 
 	root.AddCommand(&cobra.Command{
 		Use:   "unlock",
 		Short: "Unlock vault session",
-		RunE:  func(cmd *cobra.Command, args []string) error { return codeErr(cmdUnlock(app, vaultPath)) },
+		RunE:  func(cmd *cobra.Command, args []string) error { return codeErr(cmdUnlock(app, ref)) },
 	})
 	root.AddCommand(&cobra.Command{
 		Use:   "lock",
@@ -90,7 +107,7 @@ func newRootCommand(app *workspace.SessionManager, vaultPath string) *cobra.Comm
 		Short:              "Run OpenSSH through secssh workspace",
 		DisableFlagParsing: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return codeErr(cmdSSH(args, app, vaultPath))
+			return codeErr(cmdSSH(args, app, ref))
 		},
 	}
 	root.AddCommand(sshCmd)
@@ -99,14 +116,14 @@ func newRootCommand(app *workspace.SessionManager, vaultPath string) *cobra.Comm
 	configCmd.AddCommand(&cobra.Command{
 		Use:   "show",
 		Short: "Show stored ssh_config",
-		RunE:  func(cmd *cobra.Command, args []string) error { return codeErr(cmdConfig([]string{"show"}, vaultPath)) },
+		RunE:  func(cmd *cobra.Command, args []string) error { return codeErr(cmdConfig([]string{"show"}, ref)) },
 	})
 	configSetFile := ""
 	configSetCmd := &cobra.Command{
 		Use:   "set",
 		Short: "Set ssh_config from file",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return codeErr(cmdConfig([]string{"set", "--file", configSetFile}, vaultPath))
+			return codeErr(cmdConfig([]string{"set", "--file", configSetFile}, ref))
 		},
 	}
 	configSetCmd.Flags().StringVar(&configSetFile, "file", "", "config file path")
@@ -122,7 +139,7 @@ func newRootCommand(app *workspace.SessionManager, vaultPath string) *cobra.Comm
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			keyAddName = args[0]
-			return codeErr(cmdKey([]string{"add", keyAddName, "--file", keyAddFile}, vaultPath))
+			return codeErr(cmdKey([]string{"add", keyAddName, "--file", keyAddFile}, ref))
 		},
 	}
 	keyAddCmd.Flags().StringVar(&keyAddFile, "file", "", "private key file path")
@@ -140,7 +157,7 @@ func newRootCommand(app *workspace.SessionManager, vaultPath string) *cobra.Comm
 			if strings.TrimSpace(keyGenComment) != "" {
 				genArgs = append(genArgs, "--comment", keyGenComment)
 			}
-			return codeErr(cmdKey(genArgs, vaultPath))
+			return codeErr(cmdKey(genArgs, ref))
 		},
 	}
 	keyGenCmd.Flags().StringVar(&keyGenType, "type", "ed25519", "key type: ed25519|rsa")
@@ -165,7 +182,7 @@ func newRootCommand(app *workspace.SessionManager, vaultPath string) *cobra.Comm
 			if strings.TrimSpace(keyCopySecret) != "" {
 				copyArgs = append(copyArgs, "--use-secret", keyCopySecret)
 			}
-			return codeErr(cmdKey(copyArgs, vaultPath))
+			return codeErr(cmdKey(copyArgs, ref))
 		},
 	}
 	keyCopyCmd.Flags().StringVar(&keyCopyAuth, "auth", "", "auth override: key|password|auto|ask")
@@ -176,14 +193,14 @@ func newRootCommand(app *workspace.SessionManager, vaultPath string) *cobra.Comm
 	keyCmd.AddCommand(&cobra.Command{
 		Use:   "list",
 		Short: "List key names",
-		RunE:  func(cmd *cobra.Command, args []string) error { return codeErr(cmdKey([]string{"list"}, vaultPath)) },
+		RunE:  func(cmd *cobra.Command, args []string) error { return codeErr(cmdKey([]string{"list"}, ref)) },
 	})
 	keyCmd.AddCommand(&cobra.Command{
 		Use:   "rm <name>",
 		Short: "Remove key by name",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return codeErr(cmdKey([]string{"rm", args[0]}, vaultPath))
+			return codeErr(cmdKey([]string{"rm", args[0]}, ref))
 		},
 	})
 	root.AddCommand(keyCmd)
@@ -194,7 +211,7 @@ func newRootCommand(app *workspace.SessionManager, vaultPath string) *cobra.Comm
 		Short: "Add secret",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return codeErr(cmdSecret([]string{"add", args[0]}, vaultPath))
+			return codeErr(cmdSecret([]string{"add", args[0]}, ref))
 		},
 	})
 	secretCmd.AddCommand(&cobra.Command{
@@ -202,13 +219,13 @@ func newRootCommand(app *workspace.SessionManager, vaultPath string) *cobra.Comm
 		Short: "Remove secret",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return codeErr(cmdSecret([]string{"rm", args[0]}, vaultPath))
+			return codeErr(cmdSecret([]string{"rm", args[0]}, ref))
 		},
 	})
 	secretCmd.AddCommand(&cobra.Command{
 		Use:   "list",
 		Short: "List secret names",
-		RunE:  func(cmd *cobra.Command, args []string) error { return codeErr(cmdSecret([]string{"list"}, vaultPath)) },
+		RunE:  func(cmd *cobra.Command, args []string) error { return codeErr(cmdSecret([]string{"list"}, ref)) },
 	})
 	root.AddCommand(secretCmd)
 
@@ -220,7 +237,7 @@ func newRootCommand(app *workspace.SessionManager, vaultPath string) *cobra.Comm
 		Short: "Add managed host machine",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return codeErr(cmdHost([]string{"add", args[0], "--hostname", hostAddHostName, "--port", fmt.Sprintf("%d", hostAddPort), "--user", hostAddUser}, vaultPath))
+			return codeErr(cmdHost([]string{"add", args[0], "--hostname", hostAddHostName, "--port", fmt.Sprintf("%d", hostAddPort), "--user", hostAddUser}, ref))
 		},
 	}
 	hostAddCmd.Flags().StringVar(&hostAddHostName, "hostname", "", "remote host name or IP")
@@ -234,13 +251,13 @@ func newRootCommand(app *workspace.SessionManager, vaultPath string) *cobra.Comm
 		Short: "Remove managed host machine",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return codeErr(cmdHost([]string{"rm", args[0]}, vaultPath))
+			return codeErr(cmdHost([]string{"rm", args[0]}, ref))
 		},
 	})
 	hostCmd.AddCommand(&cobra.Command{
 		Use:   "list",
 		Short: "List managed hosts and connection history",
-		RunE:  func(cmd *cobra.Command, args []string) error { return codeErr(cmdHost([]string{"list"}, vaultPath)) },
+		RunE:  func(cmd *cobra.Command, args []string) error { return codeErr(cmdHost([]string{"list"}, ref)) },
 	})
 	hostAuthCmd := &cobra.Command{Use: "auth", Short: "Manage host auth policies"}
 	mode, ppolicy, pref := "", "", ""
@@ -256,7 +273,7 @@ func newRootCommand(app *workspace.SessionManager, vaultPath string) *cobra.Comm
 			if strings.TrimSpace(pref) != "" {
 				hostArgs = append(hostArgs, "--password-ref", pref)
 			}
-			return codeErr(cmdHost(hostArgs, vaultPath))
+			return codeErr(cmdHost(hostArgs, ref))
 		},
 	}
 	hostAuthSetCmd.Flags().StringVar(&mode, "mode", "", "auth mode: key|password|auto|ask")
@@ -270,21 +287,21 @@ func newRootCommand(app *workspace.SessionManager, vaultPath string) *cobra.Comm
 	root.AddCommand(&cobra.Command{
 		Use:   "passwd",
 		Short: "Change vault password",
-		RunE:  func(cmd *cobra.Command, args []string) error { return codeErr(cmdPasswd(vaultPath)) },
+		RunE:  func(cmd *cobra.Command, args []string) error { return codeErr(cmdPasswd(ref)) },
 	})
 
 	cryptoCmd := &cobra.Command{Use: "crypto", Short: "Manage vault crypto settings"}
 	cryptoCmd.AddCommand(&cobra.Command{
 		Use:   "show",
 		Short: "Show current and supported crypto settings",
-		RunE:  func(cmd *cobra.Command, args []string) error { return codeErr(cmdCrypto([]string{"show"}, vaultPath)) },
+		RunE:  func(cmd *cobra.Command, args []string) error { return codeErr(cmdCrypto([]string{"show"}, ref)) },
 	})
 	kdf, cipher := "", ""
 	cryptoSetCmd := &cobra.Command{
 		Use:   "set",
 		Short: "Set crypto settings with full re-encryption",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return codeErr(cmdCrypto([]string{"set", "--kdf", kdf, "--cipher", cipher}, vaultPath))
+			return codeErr(cmdCrypto([]string{"set", "--kdf", kdf, "--cipher", cipher}, ref))
 		},
 	}
 	cryptoSetCmd.Flags().StringVar(&kdf, "kdf", "", "kdf name")
@@ -322,14 +339,18 @@ func usage() {
   secssh crypto set --kdf argon2id --cipher aes-256-gcm`)
 }
 
-func cmdUnlock(mgr *workspace.SessionManager, vaultPath string) int {
-	if !vault.Exists(vaultPath) {
+func cmdUnlock(mgr *workspace.SessionManager, ref vaultRef) int {
+	if !vault.Exists(ref.Path) {
+		if ref.ReadOnly {
+			fmt.Fprintf(os.Stderr, "create vault failed: remote vault source is read-only: %s\n", ref.Source)
+			return 1
+		}
 		newPassword, err := promptNewPassword()
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "create vault failed: %v\n", err)
 			return 1
 		}
-		if err := vault.Initialize(vaultPath, newPassword); err != nil {
+		if err := vault.Initialize(ref.Path, newPassword); err != nil {
 			fmt.Fprintf(os.Stderr, "create vault failed: %v\n", err)
 			return 1
 		}
@@ -340,7 +361,7 @@ func cmdUnlock(mgr *workspace.SessionManager, vaultPath string) int {
 		fmt.Fprintf(os.Stderr, "unlock failed: %v\n", err)
 		return 1
 	}
-	if _, _, err := vault.Load(vaultPath, password); err != nil {
+	if _, _, err := vault.Load(ref.Path, password); err != nil {
 		fmt.Fprintf(os.Stderr, "unlock failed: %v\n", err)
 		return 1
 	}
@@ -350,7 +371,7 @@ func cmdUnlock(mgr *workspace.SessionManager, vaultPath string) int {
 	}
 	exp, err := mgr.ExpiresAt()
 	if err == nil {
-		workspace.PutVaultPassword(vaultPath, password, exp)
+		workspace.PutVaultPassword(ref.Path, password, exp)
 	}
 	fmt.Println("unlocked")
 	return 0
@@ -382,7 +403,7 @@ func cmdStatus(mgr *workspace.SessionManager) int {
 	return 0
 }
 
-func cmdSSH(args []string, mgr *workspace.SessionManager, vaultPath string) int {
+func cmdSSH(args []string, mgr *workspace.SessionManager, ref vaultRef) int {
 	if len(args) == 0 {
 		fmt.Fprintln(os.Stderr, "usage: secssh ssh <target> -- [ssh args...]")
 		return 2
@@ -407,7 +428,7 @@ func cmdSSH(args []string, mgr *workspace.SessionManager, vaultPath string) int 
 		}
 	}
 
-	header, payload, password, err := loadVaultInteractive(vaultPath)
+	header, payload, password, err := loadVaultInteractive(ref)
 	if err != nil {
 		return cmdErr("ssh", err)
 	}
@@ -425,14 +446,18 @@ func cmdSSH(args []string, mgr *workspace.SessionManager, vaultPath string) int 
 		UseSecret:  strings.TrimSpace(*useSecret),
 		PassArgs:   rest,
 		Vault:      &runPayload,
-		VaultPath:  vaultPath,
+		VaultPath:  ref.Path,
 		SessionExp: exp.Unix(),
 	}); err != nil {
 		fmt.Fprintf(os.Stderr, "ssh failed: %v\n", err)
 		return 1
 	}
+	if ref.ReadOnly {
+		fmt.Fprintln(os.Stderr, "warning: remote vault is read-only; connection history was not persisted")
+		return 0
+	}
 	recordHostConnection(payload, target, resolveAuthModeForRecord(payload, target, *auth))
-	if err := saveVault(vaultPath, password, header, payload); err != nil {
+	if err := saveVault(ref, password, header, payload); err != nil {
 		return cmdErr("ssh", err)
 	}
 	return 0
@@ -447,13 +472,13 @@ func splitSSHArgs(args []string) (runnerArgs []string, passArgs []string) {
 	return args, nil
 }
 
-func cmdConfig(args []string, vaultPath string) int {
+func cmdConfig(args []string, ref vaultRef) int {
 	if len(args) == 0 {
 		return usageErr("usage: secssh config set|show")
 	}
 	switch args[0] {
 	case "show":
-		header, payload, password, err := loadVaultInteractive(vaultPath)
+		header, payload, password, err := loadVaultInteractive(ref)
 		if err != nil {
 			return cmdErr("config show", err)
 		}
@@ -474,12 +499,15 @@ func cmdConfig(args []string, vaultPath string) int {
 		if err != nil {
 			return cmdErr("config set", err)
 		}
-		header, payload, password, err := loadVaultInteractive(vaultPath)
+		if err := ensureWritable(ref, "config set"); err != nil {
+			return cmdErr("config set", err)
+		}
+		header, payload, password, err := loadVaultInteractive(ref)
 		if err != nil {
 			return cmdErr("config set", err)
 		}
 		payload.SSHConfig = string(content)
-		if err := saveVault(vaultPath, password, header, payload); err != nil {
+		if err := saveVault(ref, password, header, payload); err != nil {
 			return cmdErr("config set", err)
 		}
 		fmt.Println("config updated")
@@ -489,7 +517,7 @@ func cmdConfig(args []string, vaultPath string) int {
 	}
 }
 
-func cmdKey(args []string, vaultPath string) int {
+func cmdKey(args []string, ref vaultRef) int {
 	if len(args) == 0 {
 		return usageErr("usage: secssh key add|gen|copy|list|rm")
 	}
@@ -514,12 +542,15 @@ func cmdKey(args []string, vaultPath string) int {
 		if err != nil {
 			return cmdErr("key add", err)
 		}
-		header, payload, password, err := loadVaultInteractive(vaultPath)
+		if err := ensureWritable(ref, "key add"); err != nil {
+			return cmdErr("key add", err)
+		}
+		header, payload, password, err := loadVaultInteractive(ref)
 		if err != nil {
 			return cmdErr("key add", err)
 		}
 		payload.Keys[name] = keyBytes
-		if err := saveVault(vaultPath, password, header, payload); err != nil {
+		if err := saveVault(ref, password, header, payload); err != nil {
 			return cmdErr("key add", err)
 		}
 		fmt.Println("key added")
@@ -539,7 +570,10 @@ func cmdKey(args []string, vaultPath string) int {
 		if err := fs.Parse(args[2:]); err != nil {
 			return 2
 		}
-		header, payload, password, err := loadVaultInteractive(vaultPath)
+		if err := ensureWritable(ref, "key gen"); err != nil {
+			return cmdErr("key gen", err)
+		}
+		header, payload, password, err := loadVaultInteractive(ref)
 		if err != nil {
 			return cmdErr("key gen", err)
 		}
@@ -552,7 +586,7 @@ func cmdKey(args []string, vaultPath string) int {
 		}
 		payload.Keys[name] = privateKey
 		payload.KeyPublics[name] = strings.TrimSpace(string(publicKey))
-		if err := saveVault(vaultPath, password, header, payload); err != nil {
+		if err := saveVault(ref, password, header, payload); err != nil {
 			return cmdErr("key gen", err)
 		}
 		fmt.Println("key generated and added")
@@ -579,7 +613,10 @@ func cmdKey(args []string, vaultPath string) int {
 				return usageErr(err.Error())
 			}
 		}
-		header, payload, password, err := loadVaultInteractive(vaultPath)
+		if err := ensureWritable(ref, "key copy"); err != nil {
+			return cmdErr("key copy", err)
+		}
+		header, payload, password, err := loadVaultInteractive(ref)
 		if err != nil {
 			return cmdErr("key copy", err)
 		}
@@ -604,7 +641,7 @@ func cmdKey(args []string, vaultPath string) int {
 			UseSecret:  strings.TrimSpace(*useSecret),
 			PassArgs:   []string{cmdline},
 			Vault:      &runPayload,
-			VaultPath:  vaultPath,
+			VaultPath:  ref.Path,
 			SessionExp: time.Now().Add(10 * time.Minute).Unix(),
 		}); err != nil {
 			return cmdErr("key copy", err)
@@ -613,13 +650,13 @@ func cmdKey(args []string, vaultPath string) int {
 		m.KeyRef = keyName
 		payload.Machines[target] = m
 		recordHostConnection(payload, target, resolveAuthModeForRecord(payload, target, *auth))
-		if err := saveVault(vaultPath, password, header, payload); err != nil {
+		if err := saveVault(ref, password, header, payload); err != nil {
 			return cmdErr("key copy", err)
 		}
 		fmt.Printf("public key %s copied to host %s (bound key=%s)\n", keyName, target, keyName)
 		return 0
 	case "list":
-		_, payload, _, err := loadVaultInteractive(vaultPath)
+		_, payload, _, err := loadVaultInteractive(ref)
 		if err != nil {
 			return cmdErr("key list", err)
 		}
@@ -633,13 +670,16 @@ func cmdKey(args []string, vaultPath string) int {
 			return usageErr("usage: secssh key rm <name>")
 		}
 		name := strings.TrimSpace(args[1])
-		header, payload, password, err := loadVaultInteractive(vaultPath)
+		if err := ensureWritable(ref, "key rm"); err != nil {
+			return cmdErr("key rm", err)
+		}
+		header, payload, password, err := loadVaultInteractive(ref)
 		if err != nil {
 			return cmdErr("key rm", err)
 		}
 		delete(payload.Keys, name)
 		delete(payload.KeyPublics, name)
-		if err := saveVault(vaultPath, password, header, payload); err != nil {
+		if err := saveVault(ref, password, header, payload); err != nil {
 			return cmdErr("key rm", err)
 		}
 		fmt.Println("key removed")
@@ -649,7 +689,7 @@ func cmdKey(args []string, vaultPath string) int {
 	}
 }
 
-func cmdSecret(args []string, vaultPath string) int {
+func cmdSecret(args []string, ref vaultRef) int {
 	if len(args) == 0 {
 		return usageErr("usage: secssh secret add|rm|list")
 	}
@@ -666,12 +706,15 @@ func cmdSecret(args []string, vaultPath string) int {
 		if err != nil {
 			return cmdErr("secret add", err)
 		}
-		header, payload, password, err := loadVaultInteractive(vaultPath)
+		if err := ensureWritable(ref, "secret add"); err != nil {
+			return cmdErr("secret add", err)
+		}
+		header, payload, password, err := loadVaultInteractive(ref)
 		if err != nil {
 			return cmdErr("secret add", err)
 		}
 		payload.Secrets[name] = string(value)
-		if err := saveVault(vaultPath, password, header, payload); err != nil {
+		if err := saveVault(ref, password, header, payload); err != nil {
 			return cmdErr("secret add", err)
 		}
 		fmt.Println("secret added")
@@ -681,18 +724,21 @@ func cmdSecret(args []string, vaultPath string) int {
 			return usageErr("usage: secssh secret rm <name>")
 		}
 		name := secret.NormalizeName(args[1])
-		header, payload, password, err := loadVaultInteractive(vaultPath)
+		if err := ensureWritable(ref, "secret rm"); err != nil {
+			return cmdErr("secret rm", err)
+		}
+		header, payload, password, err := loadVaultInteractive(ref)
 		if err != nil {
 			return cmdErr("secret rm", err)
 		}
 		delete(payload.Secrets, name)
-		if err := saveVault(vaultPath, password, header, payload); err != nil {
+		if err := saveVault(ref, password, header, payload); err != nil {
 			return cmdErr("secret rm", err)
 		}
 		fmt.Println("secret removed")
 		return 0
 	case "list":
-		_, payload, _, err := loadVaultInteractive(vaultPath)
+		_, payload, _, err := loadVaultInteractive(ref)
 		if err != nil {
 			return cmdErr("secret list", err)
 		}
@@ -706,7 +752,7 @@ func cmdSecret(args []string, vaultPath string) int {
 	}
 }
 
-func cmdHost(args []string, vaultPath string) int {
+func cmdHost(args []string, ref vaultRef) int {
 	if len(args) == 0 {
 		return usageErr("usage: secssh host add|rm|list|auth set ...")
 	}
@@ -732,7 +778,10 @@ func cmdHost(args []string, vaultPath string) int {
 		if *port <= 0 || *port > 65535 {
 			return usageErr("--port must be in range 1..65535")
 		}
-		header, payload, password, err := loadVaultInteractive(vaultPath)
+		if err := ensureWritable(ref, "host add"); err != nil {
+			return cmdErr("host add", err)
+		}
+		header, payload, password, err := loadVaultInteractive(ref)
 		if err != nil {
 			return cmdErr("host add", err)
 		}
@@ -741,7 +790,7 @@ func cmdHost(args []string, vaultPath string) int {
 			User:     strings.TrimSpace(*user),
 			Port:     *port,
 		}
-		if err := saveVault(vaultPath, password, header, payload); err != nil {
+		if err := saveVault(ref, password, header, payload); err != nil {
 			return cmdErr("host add", err)
 		}
 		fmt.Println("host added")
@@ -751,20 +800,23 @@ func cmdHost(args []string, vaultPath string) int {
 			return usageErr("usage: secssh host rm <alias>")
 		}
 		alias := strings.TrimSpace(args[1])
-		header, payload, password, err := loadVaultInteractive(vaultPath)
+		if err := ensureWritable(ref, "host rm"); err != nil {
+			return cmdErr("host rm", err)
+		}
+		header, payload, password, err := loadVaultInteractive(ref)
 		if err != nil {
 			return cmdErr("host rm", err)
 		}
 		delete(payload.Machines, alias)
 		delete(payload.Hosts, alias)
 		delete(payload.Connections, alias)
-		if err := saveVault(vaultPath, password, header, payload); err != nil {
+		if err := saveVault(ref, password, header, payload); err != nil {
 			return cmdErr("host rm", err)
 		}
 		fmt.Println("host removed")
 		return 0
 	case "list":
-		_, payload, _, err := loadVaultInteractive(vaultPath)
+		_, payload, _, err := loadVaultInteractive(ref)
 		if err != nil {
 			return cmdErr("host list", err)
 		}
@@ -817,7 +869,10 @@ func cmdHost(args []string, vaultPath string) int {
 			return usageErr("--password-ref is required when mode=password and password-policy=stored")
 		}
 
-		header, payload, password, err := loadVaultInteractive(vaultPath)
+		if err := ensureWritable(ref, "host auth set"); err != nil {
+			return cmdErr("host auth set", err)
+		}
+		header, payload, password, err := loadVaultInteractive(ref)
 		if err != nil {
 			return cmdErr("host auth set", err)
 		}
@@ -830,7 +885,7 @@ func cmdHost(args []string, vaultPath string) int {
 			PasswordPolicy: *passwordPolicy,
 			PasswordRef:    strings.TrimSpace(*passwordRef),
 		}
-		if err := saveVault(vaultPath, password, header, payload); err != nil {
+		if err := saveVault(ref, password, header, payload); err != nil {
 			return cmdErr("host auth set", err)
 		}
 		fmt.Println("host auth updated")
@@ -840,8 +895,11 @@ func cmdHost(args []string, vaultPath string) int {
 	}
 }
 
-func cmdPasswd(vaultPath string) int {
-	if !vault.Exists(vaultPath) {
+func cmdPasswd(ref vaultRef) int {
+	if err := ensureWritable(ref, "passwd"); err != nil {
+		return cmdErr("passwd", err)
+	}
+	if !vault.Exists(ref.Path) {
 		return cmdErr("passwd", errors.New("vault does not exist, run secssh unlock first"))
 	}
 	oldPassword, err := promptPassword("Current vault password: ")
@@ -852,20 +910,20 @@ func cmdPasswd(vaultPath string) int {
 	if err != nil {
 		return cmdErr("passwd", err)
 	}
-	if err := vault.ChangePassword(vaultPath, oldPassword, newPassword); err != nil {
+	if err := vault.ChangePassword(ref.Path, oldPassword, newPassword); err != nil {
 		return cmdErr("passwd", err)
 	}
 	fmt.Println("vault password updated")
 	return 0
 }
 
-func cmdCrypto(args []string, vaultPath string) int {
+func cmdCrypto(args []string, ref vaultRef) int {
 	if len(args) == 0 {
 		return usageErr("usage: secssh crypto show|set")
 	}
 	switch args[0] {
 	case "show":
-		h, err := vault.LoadHeader(vaultPath)
+		h, err := vault.LoadHeader(ref.Path)
 		if err == nil {
 			fmt.Printf("current kdf: %s\n", h.KDFType)
 			fmt.Printf("current cipher: %s\n", h.CipherType)
@@ -889,11 +947,14 @@ func cmdCrypto(args []string, vaultPath string) int {
 		if !crypto.IsSupportedCipher(*cipher) {
 			return usageErr("unsupported cipher")
 		}
+		if err := ensureWritable(ref, "crypto set"); err != nil {
+			return cmdErr("crypto set", err)
+		}
 		password, err := promptPassword("Vault password: ")
 		if err != nil {
 			return cmdErr("crypto set", err)
 		}
-		if err := vault.ChangeCrypto(vaultPath, password, *kdf, *cipher); err != nil {
+		if err := vault.ChangeCrypto(ref.Path, password, *kdf, *cipher); err != nil {
 			return cmdErr("crypto set", err)
 		}
 		fmt.Println("crypto policy updated")
@@ -903,13 +964,13 @@ func cmdCrypto(args []string, vaultPath string) int {
 	}
 }
 
-func loadVaultInteractive(vaultPath string) (*vault.FileHeader, *vault.Payload, []byte, error) {
-	if !vault.Exists(vaultPath) {
+func loadVaultInteractive(ref vaultRef) (*vault.FileHeader, *vault.Payload, []byte, error) {
+	if !vault.Exists(ref.Path) {
 		return nil, nil, nil, errors.New("vault does not exist, run secssh unlock first")
 	}
 
-	if cached, ok := workspace.GetVaultPassword(vaultPath, time.Now()); ok {
-		header, payload, err := vault.Load(vaultPath, cached)
+	if cached, ok := workspace.GetVaultPassword(ref.Path, time.Now()); ok {
+		header, payload, err := vault.Load(ref.Path, cached)
 		if err == nil {
 			return header, payload, cached, nil
 		}
@@ -920,21 +981,50 @@ func loadVaultInteractive(vaultPath string) (*vault.FileHeader, *vault.Payload, 
 	if err != nil {
 		return nil, nil, nil, err
 	}
-	header, payload, err := vault.Load(vaultPath, password)
+	header, payload, err := vault.Load(ref.Path, password)
 	if err != nil {
 		return nil, nil, nil, err
 	}
-	workspace.PutVaultPassword(vaultPath, password, time.Now().Add(10*time.Minute))
+	workspace.PutVaultPassword(ref.Path, password, time.Now().Add(10*time.Minute))
 	return header, payload, password, nil
 }
 
-func saveVault(vaultPath string, password []byte, header *vault.FileHeader, payload *vault.Payload) error {
+func saveVault(ref vaultRef, password []byte, header *vault.FileHeader, payload *vault.Payload) error {
 	params := header.KDFParams
-	return vault.Save(vaultPath, password, payload, vault.SaveOptions{
+	return vault.Save(ref.Path, password, payload, vault.SaveOptions{
 		KDFType:    header.KDFType,
 		CipherType: header.CipherType,
 		KDFParams:  &params,
 	})
+}
+
+func ensureWritable(ref vaultRef, action string) error {
+	if !ref.ReadOnly {
+		return nil
+	}
+	return fmt.Errorf("%s is not supported for remote vault sources; use a local vault path instead", action)
+}
+
+func parseVaultArg(args []string) ([]string, string, error) {
+	clean := make([]string, 0, len(args))
+	var source string
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		if arg == "--vault" {
+			if i+1 >= len(args) {
+				return nil, "", errors.New("--vault requires a value")
+			}
+			source = args[i+1]
+			i++
+			continue
+		}
+		if strings.HasPrefix(arg, "--vault=") {
+			source = strings.TrimPrefix(arg, "--vault=")
+			continue
+		}
+		clean = append(clean, arg)
+	}
+	return clean, source, nil
 }
 
 func promptNewPassword() ([]byte, error) {

@@ -74,6 +74,12 @@ make build-cross VERSION=v0.1.0
 
 ## 快速开始
 
+默认使用本地 vault，也可以通过 `--vault` 指定自定义 vault 来源。远程 `http(s)` vault 会先下载到本地缓存，并按只读方式使用。
+
+```bash
+secssh --vault https://example.com/vault.enc status
+```
+
 初始化或解锁保险库：
 
 ```bash
@@ -109,6 +115,8 @@ secssh host list
 ## 命令概览
 
 ```text
+secssh --vault <path-or-url> <command>
+
 secssh unlock
 secssh lock
 secssh status

@@ -74,6 +74,12 @@ Build outputs:
 
 ## Quick Start
 
+Use the default local vault, or point `secssh` at a custom vault source with `--vault`. A remote `http(s)` vault is downloaded to a local cache and treated as read-only.
+
+```bash
+secssh --vault https://example.com/vault.enc status
+```
+
 Initialize or unlock the vault:
 
 ```bash
@@ -109,6 +115,8 @@ secssh host list
 ## Command Summary
 
 ```text
+secssh --vault <path-or-url> <command>
+
 secssh unlock
 secssh lock
 secssh status

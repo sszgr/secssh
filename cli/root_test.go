@@ -5,6 +5,32 @@ import (
 	"testing"
 )
 
+func TestParseVaultArg(t *testing.T) {
+	args, source, err := parseVaultArg([]string{"--vault", "https://example.com/vault.enc", "status"})
+	if err != nil {
+		t.Fatalf("parseVaultArg failed: %v", err)
+	}
+	if source != "https://example.com/vault.enc" {
+		t.Fatalf("unexpected source: %s", source)
+	}
+	if !reflect.DeepEqual(args, []string{"status"}) {
+		t.Fatalf("unexpected args: %v", args)
+	}
+}
+
+func TestParseVaultArgEqualsForm(t *testing.T) {
+	args, source, err := parseVaultArg([]string{"--vault=/tmp/vault.enc", "status"})
+	if err != nil {
+		t.Fatalf("parseVaultArg failed: %v", err)
+	}
+	if source != "/tmp/vault.enc" {
+		t.Fatalf("unexpected source: %s", source)
+	}
+	if !reflect.DeepEqual(args, []string{"status"}) {
+		t.Fatalf("unexpected args: %v", args)
+	}
+}
+
 func TestSplitSSHArgsOnlyRunnerFlags(t *testing.T) {
 	runnerArgs, passArgs := splitSSHArgs([]string{"--auth", "password", "--prompt"})
 	wantRunner := []string{"--auth", "password", "--prompt"}

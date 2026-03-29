@@ -61,22 +61,22 @@ func (rw terminalRW) Read(p []byte) (int, error) {
 
 func (rw terminalRW) Write(p []byte) (int, error) { return os.Stdout.Write(p) }
 
-func runREPL(app *workspace.SessionManager, vaultPath string) int {
+func runREPL(app *workspace.SessionManager, ref vaultRef) int {
 	fmt.Fprintln(os.Stdout, "secssh interactive mode. press TAB for completion, type 'help' for commands, 'exit' to quit.")
 
 	if term.IsTerminal(int(os.Stdin.Fd())) && term.IsTerminal(int(os.Stdout.Fd())) {
-		return runREPLTerminal(app, vaultPath)
+		return runREPLTerminal(app, ref)
 	}
 	fmt.Fprintln(os.Stdout, "(non-terminal input detected, TAB completion disabled)")
-	return runREPLScanner(app, vaultPath)
+	return runREPLScanner(app, ref)
 }
 
-func runREPLTerminal(app *workspace.SessionManager, vaultPath string) int {
+func runREPLTerminal(app *workspace.SessionManager, ref vaultRef) int {
 	fd := int(os.Stdin.Fd())
 	oldState, err := term.MakeRaw(fd)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "terminal raw mode failed: %v\n", err)
-		return runREPLScanner(app, vaultPath)
+		return runREPLScanner(app, ref)
 	}
 	defer func() {
 		_ = term.Restore(fd, oldState)
@@ -126,7 +126,7 @@ func runREPLTerminal(app *workspace.SessionManager, vaultPath string) int {
 			fmt.Fprintf(os.Stderr, "terminal restore failed: %v\n", err)
 			return 1
 		}
-		if handleREPLLine(line, app, vaultPath) {
+		if handleREPLLine(line, app, ref) {
 			return 0
 		}
 		if _, err := term.MakeRaw(fd); err != nil {
@@ -136,7 +136,7 @@ func runREPLTerminal(app *workspace.SessionManager, vaultPath string) int {
 	}
 }
 
-func runREPLScanner(app *workspace.SessionManager, vaultPath string) int {
+func runREPLScanner(app *workspace.SessionManager, ref vaultRef) int {
 	s := bufio.NewScanner(os.Stdin)
 	for {
 		fmt.Fprint(os.Stdout, "secssh> ")
@@ -144,13 +144,13 @@ func runREPLScanner(app *workspace.SessionManager, vaultPath string) int {
 			fmt.Fprintln(os.Stdout)
 			return 0
 		}
-		if handleREPLLine(s.Text(), app, vaultPath) {
+		if handleREPLLine(s.Text(), app, ref) {
 			return 0
 		}
 	}
 }
 
-func handleREPLLine(raw string, app *workspace.SessionManager, vaultPath string) bool {
+func handleREPLLine(raw string, app *workspace.SessionManager, ref vaultRef) bool {
 	line := strings.TrimSpace(raw)
 	if line == "" {
 		return false
@@ -170,7 +170,7 @@ func handleREPLLine(raw string, app *workspace.SessionManager, vaultPath string)
 	if len(args) == 0 {
 		return false
 	}
-	_ = runCommand(args, app, vaultPath)
+	_ = runCommand(args, app, ref)
 	return false
 }
 
