@@ -13,7 +13,7 @@
 
 ## Vault
 
-Default path: `~/.secssh/vault.enc`
+Default path: prefer `./vault.enc`, otherwise `~/.secssh/vault.enc`
 
 Vault binary layout:
 1. plaintext header:

@@ -17,3 +17,11 @@ func DefaultPath() (string, error) {
 	}
 	return filepath.Join(home, DefaultDirName, DefaultFileName), nil
 }
+
+func CurrentDirPath() (string, error) {
+	dir, err := os.Getwd()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, DefaultFileName), nil
+}

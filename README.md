@@ -12,7 +12,7 @@ Managing SSH access usually means scattering `ssh_config`, keys, and passwords a
 
 ## Highlights
 
-- Encrypted vault storage in `~/.secssh/vault.enc` for:
+- Encrypted vault storage in `vault.enc` or `~/.secssh/vault.enc` for:
   - full `ssh_config`
   - private keys
   - public key parts for key-copy workflows
@@ -74,7 +74,7 @@ Build outputs:
 
 ## Quick Start
 
-Use the default local vault, or point `secssh` at a custom vault source with `--vault`. A remote `http(s)` vault is downloaded to a local cache and treated as read-only.
+By default, `secssh` uses `./vault.enc` when it exists, otherwise it falls back to `~/.secssh/vault.enc`. You can also point `secssh` at a custom vault source with `--vault`. A remote `http(s)` vault is downloaded to a local cache and treated as read-only.
 
 ```bash
 secssh --vault https://example.com/vault.enc status

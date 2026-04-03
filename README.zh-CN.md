@@ -12,7 +12,7 @@
 
 ## 核心特性
 
-- 将以下内容加密存放在 `~/.secssh/vault.enc`：
+- 将以下内容加密存放在 `vault.enc` 或 `~/.secssh/vault.enc`：
   - 完整的 `ssh_config`
   - 私钥
   - 公钥部分，方便执行公钥复制等流程
@@ -74,7 +74,7 @@ make build-cross VERSION=v0.1.0
 
 ## 快速开始
 
-默认使用本地 vault，也可以通过 `--vault` 指定自定义 vault 来源。远程 `http(s)` vault 会先下载到本地缓存，并按只读方式使用。
+默认会优先使用当前目录下的 `./vault.enc`，如果不存在则回退到 `~/.secssh/vault.enc`。也可以通过 `--vault` 指定自定义 vault 来源。远程 `http(s)` vault 会先下载到本地缓存，并按只读方式使用。
 
 ```bash
 secssh --vault https://example.com/vault.enc status

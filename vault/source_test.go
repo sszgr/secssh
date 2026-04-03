@@ -4,20 +4,85 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
 
-func TestResolveSourceDefaultPath(t *testing.T) {
+func TestResolveSourceDefaultPathFallsBackToHome(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	wd := t.TempDir()
+	t.Chdir(wd)
+
 	src, err := ResolveSource("")
 	if err != nil {
 		t.Fatalf("ResolveSource failed: %v", err)
 	}
-	if src.Path == "" || src.Input == "" {
-		t.Fatalf("expected non-empty source path")
+	want := filepath.Join(home, DefaultDirName, DefaultFileName)
+	if src.Path != want || src.Input != want {
+		t.Fatalf("expected fallback path %s, got path=%s input=%s", want, src.Path, src.Input)
 	}
 	if src.ReadOnly {
 		t.Fatalf("default source should be writable")
+	}
+}
+
+func TestResolveSourceDefaultPathPrefersCurrentDir(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	wd := t.TempDir()
+	t.Chdir(wd)
+
+	localVault := filepath.Join(wd, DefaultFileName)
+	if err := Initialize(localVault, []byte("secret")); err != nil {
+		t.Fatalf("Initialize failed: %v", err)
+	}
+
+	src, err := ResolveSource("")
+	if err != nil {
+		t.Fatalf("ResolveSource failed: %v", err)
+	}
+	if src.Path != localVault || src.Input != localVault {
+		t.Fatalf("expected current directory path %s, got path=%s input=%s", localVault, src.Path, src.Input)
+	}
+	if src.ReadOnly {
+		t.Fatalf("default source should be writable")
+	}
+}
+
+func TestResolveSourceDefaultPathRejectsInvalidCurrentDirFile(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	wd := t.TempDir()
+	t.Chdir(wd)
+
+	localVault := filepath.Join(wd, DefaultFileName)
+	if err := os.WriteFile(localVault, nil, 0o600); err != nil {
+		t.Fatalf("WriteFile failed: %v", err)
+	}
+
+	_, err := ResolveSource("")
+	if err == nil {
+		t.Fatalf("expected invalid current directory vault to fail")
+	}
+	if !strings.Contains(err.Error(), "invalid vault file") || !strings.Contains(err.Error(), "vault file too small") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestResolveSourceExplicitPathRejectsInvalidFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "vault.enc")
+	if err := os.WriteFile(path, []byte("not-a-vault"), 0o600); err != nil {
+		t.Fatalf("WriteFile failed: %v", err)
+	}
+
+	_, err := ResolveSource(path)
+	if err == nil {
+		t.Fatalf("expected invalid explicit vault path to fail")
+	}
+	if !strings.Contains(err.Error(), "invalid vault file") {
+		t.Fatalf("unexpected error: %v", err)
 	}
 }
 

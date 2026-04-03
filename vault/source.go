@@ -20,8 +20,24 @@ type Source struct {
 
 func ResolveSource(input string) (*Source, error) {
 	if strings.TrimSpace(input) == "" {
-		path, err := DefaultPath()
+		path, err := CurrentDirPath()
 		if err != nil {
+			return nil, err
+		}
+		if Exists(path) {
+			if err := validateExistingLocalSource(path); err != nil {
+				return nil, err
+			}
+			return &Source{
+				Input: path,
+				Path:  path,
+			}, nil
+		}
+		path, err = DefaultPath()
+		if err != nil {
+			return nil, err
+		}
+		if err := validateExistingLocalSource(path); err != nil {
 			return nil, err
 		}
 		return &Source{
@@ -42,10 +58,24 @@ func ResolveSource(input string) (*Source, error) {
 		}, nil
 	}
 
+	if err := validateExistingLocalSource(input); err != nil {
+		return nil, err
+	}
+
 	return &Source{
 		Input: input,
 		Path:  input,
 	}, nil
+}
+
+func validateExistingLocalSource(path string) error {
+	if !Exists(path) {
+		return nil
+	}
+	if _, err := LoadHeader(path); err != nil {
+		return fmt.Errorf("invalid vault file %s: %w", path, err)
+	}
+	return nil
 }
 
 func isRemoteURL(raw string) bool {
