@@ -2,18 +2,21 @@ package runner
 
 import (
 	"bufio"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"os"
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 
+	"github.com/sszgr/secssh/hosttarget"
+	"github.com/sszgr/secssh/terminalinput"
 	"github.com/sszgr/secssh/vault"
 	"github.com/sszgr/secssh/workspace"
-	"golang.org/x/term"
 )
 
 func RunSSH(opts Options) error {
@@ -25,8 +28,8 @@ func RunSFTP(opts Options, target string) error {
 }
 
 func RunSCP(opts Options, src, dst string) error {
-	return runOpenSSHProgram("scp", opts, "", func(configPath string, opts Options, password, askpassPath string, baseEnv []string) ([]string, []string, bool) {
-		return buildSCPInvocation(configPath, src, dst, opts.PassArgs, password, askpassPath, baseEnv)
+	return runOpenSSHProgram("scp", opts, "", func(configPath string, opts Options, authArgs []string, password, askpassPath string, baseEnv []string) ([]string, []string, bool) {
+		return buildSCPInvocation(configPath, src, dst, authArgs, opts.PassArgs, password, askpassPath, baseEnv)
 	})
 }
 
@@ -58,12 +61,9 @@ func runOpenSSHProgram(program string, opts Options, runtimeTarget string, build
 		return err
 	}
 
-	authCfg, password, err := resolveAuth(opts, opts.Vault)
+	authArgs, password, err := resolveAuthArgs(opts, opts.Vault)
 	if err != nil {
 		return err
-	}
-	if authCfg != "" {
-		rendered += "\n" + authCfg
 	}
 
 	configPath := filepath.Join(runDir, "ssh_config")
@@ -71,10 +71,11 @@ func runOpenSSHProgram(program string, opts Options, runtimeTarget string, build
 		return err
 	}
 
-	args, env, useAskPass := build(configPath, opts, password, filepath.Join(runDir, "askpass.sh"), os.Environ())
+	askpassPath := askpassScriptPath(runDir)
+	args, env, useAskPass := build(configPath, opts, authArgs, password, askpassPath, os.Environ())
 	if useAskPass {
-		script := "#!/bin/sh\nprintf '%s' \"$SECSSH_SSH_PASSWORD\"\n"
-		if err := os.WriteFile(filepath.Join(runDir, "askpass.sh"), []byte(script), 0o700); err != nil {
+		script, mode := askpassScriptContent()
+		if err := os.WriteFile(askpassPath, []byte(script), mode); err != nil {
 			return err
 		}
 	}
@@ -83,9 +84,6 @@ func runOpenSSHProgram(program string, opts Options, runtimeTarget string, build
 	cmd.Stderr = os.Stderr
 	cmd.Stdin = os.Stdin
 	cmd.Env = env
-	if useAskPass {
-		cmd.Stdin = nil
-	}
 
 	signal.Ignore(os.Interrupt)
 	defer signal.Reset(os.Interrupt)
@@ -93,18 +91,22 @@ func runOpenSSHProgram(program string, opts Options, runtimeTarget string, build
 	return cmd.Run()
 }
 
-type buildInvocationFunc func(configPath string, opts Options, password, askpassPath string, baseEnv []string) (args []string, env []string, useAskPass bool)
+type buildInvocationFunc func(configPath string, opts Options, authArgs []string, password, askpassPath string, baseEnv []string) (args []string, env []string, useAskPass bool)
 
-func buildSSHInvocation(configPath string, opts Options, password, askpassPath string, baseEnv []string) (args []string, env []string, useAskPass bool) {
-	return buildAskpassInvocation([]string{"-F", configPath, opts.Target}, opts.PassArgs, password, askpassPath, baseEnv)
+func buildSSHInvocation(configPath string, opts Options, authArgs []string, password, askpassPath string, baseEnv []string) (args []string, env []string, useAskPass bool) {
+	prefix := append([]string{"-F", configPath}, authArgs...)
+	prefix = append(prefix, opts.Target)
+	return buildAskpassInvocation(prefix, opts.PassArgs, password, askpassPath, baseEnv)
 }
 
-func buildSFTPInvocation(configPath string, opts Options, password, askpassPath string, baseEnv []string) (args []string, env []string, useAskPass bool) {
-	return buildAskpassInvocation([]string{"-F", configPath}, append(opts.PassArgs, opts.Target), password, askpassPath, baseEnv)
+func buildSFTPInvocation(configPath string, opts Options, authArgs []string, password, askpassPath string, baseEnv []string) (args []string, env []string, useAskPass bool) {
+	prefix := append([]string{"-F", configPath}, authArgs...)
+	return buildAskpassInvocation(prefix, append(opts.PassArgs, opts.Target), password, askpassPath, baseEnv)
 }
 
-func buildSCPInvocation(configPath, src, dst string, passArgs []string, password, askpassPath string, baseEnv []string) (args []string, env []string, useAskPass bool) {
-	return buildAskpassInvocation([]string{"-F", configPath}, append(append([]string{}, passArgs...), src, dst), password, askpassPath, baseEnv)
+func buildSCPInvocation(configPath, src, dst string, authArgs, passArgs []string, password, askpassPath string, baseEnv []string) (args []string, env []string, useAskPass bool) {
+	prefix := append([]string{"-F", configPath}, authArgs...)
+	return buildAskpassInvocation(prefix, append(append([]string{}, passArgs...), src, dst), password, askpassPath, baseEnv)
 }
 
 func buildAskpassInvocation(prefix, suffix []string, password, askpassPath string, baseEnv []string) (args []string, env []string, useAskPass bool) {
@@ -117,9 +119,27 @@ func buildAskpassInvocation(prefix, suffix []string, password, askpassPath strin
 		"SSH_ASKPASS="+askpassPath,
 		"SSH_ASKPASS_REQUIRE=force",
 		"DISPLAY=secssh:0",
-		"SECSSH_SSH_PASSWORD="+password,
 	)
+	if runtime.GOOS == "windows" {
+		env = append(env, "SECSSH_SSH_PASSWORD_B64="+base64.StdEncoding.EncodeToString([]byte(password)))
+	} else {
+		env = append(env, "SECSSH_SSH_PASSWORD="+password)
+	}
 	return args, env, true
+}
+
+func askpassScriptPath(runDir string) string {
+	if runtime.GOOS == "windows" {
+		return filepath.Join(runDir, "askpass.cmd")
+	}
+	return filepath.Join(runDir, "askpass.sh")
+}
+
+func askpassScriptContent() (string, os.FileMode) {
+	if runtime.GOOS == "windows" {
+		return "@echo off\r\npowershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command \"[Console]::Out.Write([System.Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($env:SECSSH_SSH_PASSWORD_B64)))\"\r\n", 0o600
+	}
+	return "#!/bin/sh\nprintf '%s' \"$SECSSH_SSH_PASSWORD\"\n", 0o700
 }
 
 func renderConfig(src string, keys map[string][]byte, runDir string) (string, error) {
@@ -180,8 +200,9 @@ func rewriteIdentityFile(line string, keys map[string][]byte, runDir string) (st
 	return line[:idx] + keyPath, nil
 }
 
-func resolveAuth(opts Options, payload *vault.Payload) (extraConfig string, password string, err error) {
-	hostCfg := payload.Hosts[opts.Target]
+func resolveAuthArgs(opts Options, payload *vault.Payload) (authArgs []string, password string, err error) {
+	hostAlias := hosttarget.ResolveManagedHostAlias(payload, opts.Target)
+	hostCfg := payload.Hosts[hostAlias]
 	mode := strings.TrimSpace(hostCfg.Mode)
 	if opts.AuthMode != "" {
 		mode = opts.AuthMode
@@ -192,28 +213,36 @@ func resolveAuth(opts Options, payload *vault.Payload) (extraConfig string, pass
 	if mode == "ask" {
 		mode, err = promptAuthMode()
 		if err != nil {
-			return "", "", err
+			return nil, "", err
 		}
 	}
 
 	switch mode {
 	case "key":
-		return fmt.Sprintf("Host %s\n  PubkeyAuthentication yes\n  PasswordAuthentication no\n  KbdInteractiveAuthentication no\n", opts.Target), "", nil
+		return []string{
+			"-o", "PubkeyAuthentication=yes",
+			"-o", "PasswordAuthentication=no",
+			"-o", "KbdInteractiveAuthentication=no",
+		}, "", nil
 	case "auto":
-		return "", "", nil
+		return nil, "", nil
 	case "password":
-		pw, err := resolvePassword(opts, hostCfg, payload)
+		pw, err := resolvePassword(opts, hostAlias, hostCfg, payload)
 		if err != nil {
-			return "", "", err
+			return nil, "", err
 		}
-		cfg := fmt.Sprintf("Host %s\n  PubkeyAuthentication no\n  PasswordAuthentication yes\n  KbdInteractiveAuthentication yes\n  PreferredAuthentications keyboard-interactive,password\n", opts.Target)
-		return cfg, pw, nil
+		return []string{
+			"-o", "PubkeyAuthentication=no",
+			"-o", "PasswordAuthentication=yes",
+			"-o", "KbdInteractiveAuthentication=yes",
+			"-o", "PreferredAuthentications=keyboard-interactive,password",
+		}, pw, nil
 	default:
-		return "", "", fmt.Errorf("unsupported auth mode: %s", mode)
+		return nil, "", fmt.Errorf("unsupported auth mode: %s", mode)
 	}
 }
 
-func resolvePassword(opts Options, cfg vault.HostAuth, payload *vault.Payload) (string, error) {
+func resolvePassword(opts Options, hostAlias string, cfg vault.HostAuth, payload *vault.Payload) (string, error) {
 	if opts.Prompt {
 		return promptSecret("SSH password: ")
 	}
@@ -232,7 +261,7 @@ func resolvePassword(opts Options, cfg vault.HostAuth, payload *vault.Payload) (
 	case "prompt":
 		return promptSecret("SSH password: ")
 	case "session":
-		cacheKey := sessionCacheKey(opts, cfg)
+		cacheKey := sessionCacheKey(hostAlias, opts, cfg)
 		now := time.Now()
 		if v, ok := workspace.GetCachedPassword(cacheKey, now); ok {
 			return v, nil
@@ -261,12 +290,19 @@ func resolvePassword(opts Options, cfg vault.HostAuth, payload *vault.Payload) (
 	}
 }
 
-func sessionCacheKey(opts Options, cfg vault.HostAuth) string {
+func sessionCacheKey(hostAlias string, opts Options, cfg vault.HostAuth) string {
 	ref := strings.TrimSpace(cfg.PasswordRef)
 	if ref == "" {
-		ref = opts.Target
+		ref = resolveCacheHostKey(hostAlias, opts.Target)
 	}
-	return "host=" + opts.Target + ";ref=" + ref
+	return "host=" + resolveCacheHostKey(hostAlias, opts.Target) + ";ref=" + ref
+}
+
+func resolveCacheHostKey(hostAlias, target string) string {
+	if strings.TrimSpace(hostAlias) != "" {
+		return strings.TrimSpace(hostAlias)
+	}
+	return strings.TrimSpace(target)
 }
 
 func promptAuthMode() (string, error) {
@@ -296,16 +332,11 @@ func promptLine(prompt string) (string, error) {
 }
 
 func promptSecret(prompt string) (string, error) {
-	fmt.Fprint(os.Stdout, prompt)
-	if term.IsTerminal(int(os.Stdin.Fd())) {
-		pw, err := term.ReadPassword(int(os.Stdin.Fd()))
-		fmt.Fprintln(os.Stdout)
-		if err != nil {
-			return "", err
-		}
-		return strings.TrimSpace(string(pw)), nil
+	pw, err := terminalinput.ReadSecret(prompt)
+	if err != nil {
+		return "", err
 	}
-	return promptLine("")
+	return strings.TrimSpace(string(pw)), nil
 }
 
 func sanitizeFileName(name string) string {

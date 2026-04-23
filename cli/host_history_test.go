@@ -29,12 +29,19 @@ func TestRecordHostConnection(t *testing.T) {
 func TestResolveAuthModeForRecord(t *testing.T) {
 	p := vault.NewEmptyPayload()
 	p.Hosts["prod"] = vault.HostAuth{Mode: "key"}
+	p.Machines["prod"] = vault.HostMachine{HostName: "10.0.0.10"}
 
 	if got := resolveAuthModeForRecord(p, "prod", "password"); got != "password" {
 		t.Fatalf("override should win, got=%s", got)
 	}
 	if got := resolveAuthModeForRecord(p, "prod", ""); got != "key" {
 		t.Fatalf("host policy should apply, got=%s", got)
+	}
+	if got := resolveAuthModeForRecord(p, "root@prod", ""); got != "key" {
+		t.Fatalf("user@alias should resolve host policy, got=%s", got)
+	}
+	if got := resolveAuthModeForRecord(p, "10.0.0.10", ""); got != "key" {
+		t.Fatalf("managed host name should resolve host policy, got=%s", got)
 	}
 	if got := resolveAuthModeForRecord(p, "unknown", ""); got != "auto" {
 		t.Fatalf("default should be auto, got=%s", got)

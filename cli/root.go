@@ -1,7 +1,6 @@
 package cli
 
 import (
-	"bufio"
 	"bytes"
 	"errors"
 	"flag"
@@ -15,12 +14,13 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/sszgr/secssh/crypto"
 	"github.com/sszgr/secssh/host"
+	"github.com/sszgr/secssh/hosttarget"
 	"github.com/sszgr/secssh/runner"
 	"github.com/sszgr/secssh/secret"
 	"github.com/sszgr/secssh/sshkey"
+	"github.com/sszgr/secssh/terminalinput"
 	"github.com/sszgr/secssh/vault"
 	"github.com/sszgr/secssh/workspace"
-	"golang.org/x/term"
 )
 
 type vaultRef struct {
@@ -577,6 +577,7 @@ func runRemoteCommand(op string, mgr *workspace.SessionManager, ref vaultRef, pa
 	}
 	runPayload := *payload
 	runPayload.SSHConfig = mergeManagedHostsConfig(payload.SSHConfig, payload.Machines)
+	hostAlias := hosttarget.ResolveManagedHostAlias(payload, target)
 
 	if err := invoke(runner.Options{
 		Target:     target,
@@ -595,7 +596,7 @@ func runRemoteCommand(op string, mgr *workspace.SessionManager, ref vaultRef, pa
 		fmt.Fprintf(os.Stderr, "warning: remote vault is read-only; connection history was not persisted\n")
 		return 0
 	}
-	recordHostConnection(payload, target, resolveAuthModeForRecord(payload, target, parsed.AuthMode))
+	recordHostConnection(payload, hostAlias, resolveAuthModeForRecord(payload, hostAlias, parsed.AuthMode))
 	if err := saveVault(ref, password, header, payload); err != nil {
 		return cmdErr(op, err)
 	}
@@ -1131,21 +1132,11 @@ func promptNewPassword() ([]byte, error) {
 }
 
 func promptPassword(prompt string) ([]byte, error) {
-	fmt.Fprint(os.Stdout, prompt)
-	if term.IsTerminal(int(os.Stdin.Fd())) {
-		pw, err := term.ReadPassword(int(os.Stdin.Fd()))
-		fmt.Fprintln(os.Stdout)
-		if err != nil {
-			return nil, err
-		}
-		return bytes.TrimSpace(pw), nil
-	}
-	reader := bufio.NewReader(os.Stdin)
-	line, err := reader.ReadString('\n')
+	pw, err := terminalinput.ReadSecret(prompt)
 	if err != nil {
 		return nil, err
 	}
-	return bytes.TrimSpace([]byte(line)), nil
+	return bytes.TrimSpace(pw), nil
 }
 
 func sortedBytesMapKeys(m map[string][]byte) []string {
@@ -1310,6 +1301,7 @@ func resolveAuthModeForRecord(payload *vault.Payload, target, override string) s
 	if mode != "" {
 		return mode
 	}
+	target = hosttarget.ResolveManagedHostAlias(payload, target)
 	if payload != nil {
 		if h, ok := payload.Hosts[target]; ok && strings.TrimSpace(h.Mode) != "" {
 			return strings.TrimSpace(h.Mode)
