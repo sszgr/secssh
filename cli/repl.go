@@ -7,9 +7,12 @@ import (
 	"io"
 	"os"
 	"sort"
+	"strconv"
 	"strings"
 	"sync/atomic"
+	"time"
 
+	"github.com/sszgr/secssh/runner"
 	"github.com/sszgr/secssh/workspace"
 	"golang.org/x/term"
 )
@@ -27,6 +30,67 @@ const (
 type terminalRW struct {
 	interrupted *atomic.Bool
 	eot         *atomic.Bool
+}
+
+type replHistory struct {
+	entries []string
+	max     int
+}
+
+func newREPLHistory(max int) *replHistory {
+	if max <= 0 {
+		max = 100
+	}
+	return &replHistory{max: max}
+}
+
+func (h *replHistory) Add(entry string) {
+	entry = strings.TrimSpace(entry)
+	if entry == "" {
+		return
+	}
+	if len(h.entries) == h.max {
+		copy(h.entries, h.entries[1:])
+		h.entries[h.max-1] = entry
+		return
+	}
+	h.entries = append(h.entries, entry)
+}
+
+func (h *replHistory) Clear() {
+	h.entries = nil
+}
+
+func (h *replHistory) SetLimit(max int) {
+	if max <= 0 {
+		max = 1
+	}
+	h.max = max
+	h.trimToLimit()
+}
+
+func (h *replHistory) Len() int {
+	return len(h.entries)
+}
+
+func (h *replHistory) At(idx int) string {
+	if idx < 0 || idx >= len(h.entries) {
+		panic(fmt.Sprintf("history index %d out of range", idx))
+	}
+	return h.entries[len(h.entries)-1-idx]
+}
+
+func (h *replHistory) Entries() []string {
+	out := make([]string, len(h.entries))
+	copy(out, h.entries)
+	return out
+}
+
+func (h *replHistory) trimToLimit() {
+	if len(h.entries) <= h.max {
+		return
+	}
+	h.entries = append([]string(nil), h.entries[len(h.entries)-h.max:]...)
 }
 
 func (rw terminalRW) Read(p []byte) (int, error) {
@@ -64,19 +128,20 @@ func (rw terminalRW) Write(p []byte) (int, error) { return os.Stdout.Write(p) }
 func runREPL(app *workspace.SessionManager, ref vaultRef) int {
 	fmt.Fprintln(os.Stdout, "secssh interactive mode. press TAB for completion, type 'help' for commands, 'exit' to quit.")
 
+	history := newREPLHistory(100)
 	if term.IsTerminal(int(os.Stdin.Fd())) && term.IsTerminal(int(os.Stdout.Fd())) {
-		return runREPLTerminal(app, ref)
+		return runREPLTerminal(app, ref, history)
 	}
 	fmt.Fprintln(os.Stdout, "(non-terminal input detected, TAB completion disabled)")
-	return runREPLScanner(app, ref)
+	return runREPLScanner(app, ref, history)
 }
 
-func runREPLTerminal(app *workspace.SessionManager, ref vaultRef) int {
+func runREPLTerminal(app *workspace.SessionManager, ref vaultRef, history *replHistory) int {
 	fd := int(os.Stdin.Fd())
 	oldState, err := term.MakeRaw(fd)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "terminal raw mode failed: %v\n", err)
-		return runREPLScanner(app, ref)
+		return runREPLScanner(app, ref, history)
 	}
 	defer func() {
 		_ = term.Restore(fd, oldState)
@@ -85,7 +150,9 @@ func runREPLTerminal(app *workspace.SessionManager, ref vaultRef) int {
 	var interrupted atomic.Bool
 	var eot atomic.Bool
 	newTerminal := func() *term.Terminal {
-		tt := term.NewTerminal(terminalRW{interrupted: &interrupted, eot: &eot}, "secssh> ")
+		tt := term.NewTerminal(terminalRW{interrupted: &interrupted, eot: &eot}, replPrompt())
+		tt.History = history
+		syncTerminalSize(tt, fd)
 		tt.AutoCompleteCallback = func(line string, pos int, key rune) (string, int, bool) {
 			if key != '\t' {
 				return line, pos, false
@@ -126,40 +193,46 @@ func runREPLTerminal(app *workspace.SessionManager, ref vaultRef) int {
 			fmt.Fprintf(os.Stderr, "terminal restore failed: %v\n", err)
 			return 1
 		}
-		if handleREPLLine(line, app, ref) {
+		if handleREPLLine(line, app, ref, history) {
 			return 0
 		}
 		if _, err := term.MakeRaw(fd); err != nil {
 			fmt.Fprintf(os.Stderr, "terminal raw mode failed: %v\n", err)
 			return 1
 		}
+		t = newTerminal()
 	}
 }
 
-func runREPLScanner(app *workspace.SessionManager, ref vaultRef) int {
+func syncTerminalSize(t *term.Terminal, fd int) {
+	width, height, err := term.GetSize(fd)
+	if err != nil || width <= 0 {
+		return
+	}
+	_ = t.SetSize(width, height)
+}
+
+func runREPLScanner(app *workspace.SessionManager, ref vaultRef, history *replHistory) int {
 	s := bufio.NewScanner(os.Stdin)
 	for {
-		fmt.Fprint(os.Stdout, "secssh> ")
+		fmt.Fprint(os.Stdout, replPrompt())
 		if !s.Scan() {
 			fmt.Fprintln(os.Stdout)
 			return 0
 		}
-		if handleREPLLine(s.Text(), app, ref) {
+		line := s.Text()
+		if history != nil {
+			history.Add(line)
+		}
+		if handleREPLLine(line, app, ref, history) {
 			return 0
 		}
 	}
 }
 
-func handleREPLLine(raw string, app *workspace.SessionManager, ref vaultRef) bool {
+func handleREPLLine(raw string, app *workspace.SessionManager, ref vaultRef, history *replHistory) bool {
 	line := strings.TrimSpace(raw)
 	if line == "" {
-		return false
-	}
-	switch line {
-	case "exit", "quit":
-		return true
-	case "help":
-		usage()
 		return false
 	}
 	args, err := parseCommandLine(line)
@@ -168,6 +241,19 @@ func handleREPLLine(raw string, app *workspace.SessionManager, ref vaultRef) boo
 		return false
 	}
 	if len(args) == 0 {
+		return false
+	}
+	switch args[0] {
+	case "exit", "quit":
+		return true
+	case "help":
+		if handleREPLHelp(args[1:]) {
+			return false
+		}
+		usage()
+		return false
+	}
+	if handled := handleREPLBuiltin(args, app, ref, history); handled {
 		return false
 	}
 	_ = runCommand(args, app, ref)
@@ -221,7 +307,7 @@ func completionCandidates(path []string, current string) []string {
 	base := []string{}
 	switch len(path) {
 	case 0:
-		base = []string{"unlock", "lock", "status", "ssh", "scp", "sftp", "config", "key", "secret", "host", "passwd", "crypto", "help", "exit", "quit"}
+		base = []string{"unlock", "lock", "status", "ssh", "scp", "sftp", "pwd", "ls", "cd", "rpwd", "rls", "history", "config", "key", "secret", "host", "passwd", "crypto", "help", "exit", "quit"}
 	case 1:
 		switch path[0] {
 		case "config":
@@ -240,9 +326,25 @@ func completionCandidates(path []string, current string) []string {
 			base = []string{"--auth", "--prompt", "--use-secret", "--"}
 		case "sftp":
 			base = []string{"--auth", "--prompt", "--use-secret", "--"}
+		case "pwd":
+			base = []string{}
+		case "ls":
+			base = []string{}
+		case "cd":
+			base = []string{}
+		case "rpwd":
+			base = []string{}
+		case "rls":
+			base = []string{}
+		case "history":
+			base = []string{"clear", "limit"}
 		}
 	case 2:
 		switch path[0] {
+		case "history":
+			if path[1] == "limit" {
+				base = []string{"10", "50", "100", "500"}
+			}
 		case "host":
 			if path[1] == "auth" {
 				base = []string{"set"}
@@ -298,6 +400,270 @@ func completionCandidates(path []string, current string) []string {
 	}
 	sort.Strings(out)
 	return out
+}
+
+func replPrompt() string {
+	cwd, err := os.Getwd()
+	if err != nil || strings.TrimSpace(cwd) == "" {
+		return "secssh> "
+	}
+	return "secssh " + cwd + "> "
+}
+
+func handleREPLBuiltin(args []string, app *workspace.SessionManager, ref vaultRef, history *replHistory) bool {
+	switch args[0] {
+	case "history":
+		if wantsBuiltinHelp(args[1:]) {
+			printREPLBuiltinHelp("history")
+			return true
+		}
+		printREPLHistory(args[1:], history)
+		return true
+	case "pwd":
+		if wantsBuiltinHelp(args[1:]) {
+			printREPLBuiltinHelp("pwd")
+			return true
+		}
+		runREPLPwd(args[1:], app, ref)
+		return true
+	case "ls":
+		if wantsBuiltinHelp(args[1:]) {
+			printREPLBuiltinHelp("ls")
+			return true
+		}
+		runREPLLs(args[1:], app, ref)
+		return true
+	case "cd":
+		if wantsBuiltinHelp(args[1:]) {
+			printREPLBuiltinHelp("cd")
+			return true
+		}
+		runREPLCd(args[1:])
+		return true
+	case "rpwd":
+		if wantsBuiltinHelp(args[1:]) {
+			printREPLBuiltinHelp("rpwd")
+			return true
+		}
+		runREPLRemotePwd(args[1:], app, ref)
+		return true
+	case "rls":
+		if wantsBuiltinHelp(args[1:]) {
+			printREPLBuiltinHelp("rls")
+			return true
+		}
+		runREPLRemoteLs(args[1:], app, ref)
+		return true
+	default:
+		return false
+	}
+}
+
+func runREPLPwd(args []string, app *workspace.SessionManager, ref vaultRef) {
+	if len(args) > 0 {
+		fmt.Fprintln(os.Stderr, "pwd failed: usage: pwd")
+		return
+	}
+	cwd, err := os.Getwd()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "pwd failed: %v\n", err)
+		return
+	}
+	fmt.Fprintln(os.Stdout, cwd)
+}
+
+func runREPLLs(args []string, app *workspace.SessionManager, ref vaultRef) {
+	if len(args) == 0 {
+		_ = listLocalDir(".")
+		return
+	}
+	if len(args) > 1 {
+		fmt.Fprintln(os.Stderr, "ls failed: usage: ls [path]")
+		return
+	}
+	_ = listLocalDir(args[0])
+}
+
+func runREPLCd(args []string) {
+	dest := ""
+	switch len(args) {
+	case 0:
+		home, err := os.UserHomeDir()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "cd failed: %v\n", err)
+			return
+		}
+		dest = home
+	case 1:
+		dest = args[0]
+	default:
+		fmt.Fprintln(os.Stderr, "cd failed: usage: cd [path]")
+		return
+	}
+	if err := os.Chdir(dest); err != nil {
+		fmt.Fprintf(os.Stderr, "cd failed: %v\n", err)
+	}
+}
+
+func runREPLRemotePwd(args []string, app *workspace.SessionManager, ref vaultRef) {
+	if len(args) != 1 || strings.TrimSpace(args[0]) == "" {
+		fmt.Fprintln(os.Stderr, "rpwd failed: usage: rpwd <host>")
+		return
+	}
+	_ = runRemoteInspectCommand("rpwd", app, ref, strings.TrimSpace(args[0]), "pwd")
+}
+
+func runREPLRemoteLs(args []string, app *workspace.SessionManager, ref vaultRef) {
+	if len(args) == 0 || len(args) > 2 || strings.TrimSpace(args[0]) == "" {
+		fmt.Fprintln(os.Stderr, "rls failed: usage: rls <host> [path]")
+		return
+	}
+	cmd := "ls -la"
+	if len(args) == 2 && strings.TrimSpace(args[1]) != "" {
+		cmd += " -- " + shellSingleQuote(args[1])
+	}
+	_ = runRemoteInspectCommand("rls", app, ref, strings.TrimSpace(args[0]), cmd)
+}
+
+func printREPLHistory(args []string, history *replHistory) {
+	if history == nil {
+		return
+	}
+	switch len(args) {
+	case 0:
+		for i, entry := range history.Entries() {
+			fmt.Fprintf(os.Stdout, "%4d  %s\n", i+1, entry)
+		}
+		return
+	case 1:
+		if args[0] == "clear" {
+			history.Clear()
+			return
+		}
+	case 2:
+		if args[0] == "limit" {
+			max, err := strconv.Atoi(args[1])
+			if err != nil || max <= 0 {
+				fmt.Fprintln(os.Stderr, "history failed: limit must be a positive integer")
+				return
+			}
+			history.SetLimit(max)
+			fmt.Fprintf(os.Stdout, "history limit set to %d\n", max)
+			return
+		}
+	}
+	fmt.Fprintln(os.Stderr, "history failed: usage: history [clear|limit <n>]")
+}
+
+func historyUsageLines() []string {
+	return []string{
+		"history",
+		"history clear",
+		"history limit <n>",
+		"  Show, clear, or resize command history for this interactive session.",
+	}
+}
+
+func printHistoryUsage() {
+	for _, line := range historyUsageLines() {
+		fmt.Fprintln(os.Stdout, line)
+	}
+}
+
+func listLocalDir(path string) error {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		path = "."
+	}
+	entries, err := os.ReadDir(path)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "ls failed: %v\n", err)
+		return err
+	}
+	for _, entry := range entries {
+		name := entry.Name()
+		if entry.IsDir() {
+			name += string(os.PathSeparator)
+		}
+		fmt.Fprintln(os.Stdout, name)
+	}
+	return nil
+}
+
+func wantsBuiltinHelp(args []string) bool {
+	for _, arg := range args {
+		switch strings.TrimSpace(arg) {
+		case "-h", "--help", "help":
+			return true
+		}
+	}
+	return false
+}
+
+func handleREPLHelp(args []string) bool {
+	if len(args) != 1 {
+		return false
+	}
+	switch strings.TrimSpace(args[0]) {
+	case "history", "pwd", "ls", "cd", "rpwd", "rls":
+		printREPLBuiltinHelp(strings.TrimSpace(args[0]))
+		return true
+	default:
+		return false
+	}
+}
+
+func printREPLBuiltinHelp(name string) {
+	switch name {
+	case "history":
+		printHistoryUsage()
+	case "pwd":
+		fmt.Fprintln(os.Stdout, "pwd")
+		fmt.Fprintln(os.Stdout, "  Show local current directory.")
+	case "ls":
+		fmt.Fprintln(os.Stdout, "ls [path]")
+		fmt.Fprintln(os.Stdout, "  List local directory entries.")
+	case "cd":
+		fmt.Fprintln(os.Stdout, "cd [path]")
+		fmt.Fprintln(os.Stdout, "  Change local working directory.")
+	case "rpwd":
+		fmt.Fprintln(os.Stdout, "rpwd <host>")
+		fmt.Fprintln(os.Stdout, "  Show remote current directory through SSH.")
+	case "rls":
+		fmt.Fprintln(os.Stdout, "rls <host> [path]")
+		fmt.Fprintln(os.Stdout, "  List remote directory entries through SSH.")
+	default:
+		fmt.Fprintf(os.Stdout, "no help for %s\n", name)
+	}
+}
+
+func runRemoteInspectCommand(op string, mgr *workspace.SessionManager, ref vaultRef, target, remoteCommand string) int {
+	if err := mgr.RequireUnlocked(); err != nil {
+		fmt.Fprintf(os.Stderr, "%s failed: %v\n", op, err)
+		return 1
+	}
+	header, payload, _, err := loadVaultInteractive(ref)
+	if err != nil {
+		return cmdErr(op, err)
+	}
+	_ = header
+	exp, err := mgr.ExpiresAt()
+	if err != nil {
+		exp = time.Time{}
+	}
+	runPayload := *payload
+	runPayload.SSHConfig = mergeManagedHostsConfig(payload.SSHConfig, payload.Machines)
+	if err := runner.RunSSH(runner.Options{
+		Target:     strings.TrimSpace(target),
+		PassArgs:   []string{remoteCommand},
+		Vault:      &runPayload,
+		VaultPath:  ref.Path,
+		SessionExp: exp.Unix(),
+	}); err != nil {
+		fmt.Fprintf(os.Stderr, "%s failed: %v\n", op, err)
+		return 1
+	}
+	return 0
 }
 
 func longestCommonPrefix(values []string) string {
