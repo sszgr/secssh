@@ -64,6 +64,14 @@ func TestCompletionCandidatesKeySubcommands(t *testing.T) {
 	}
 }
 
+func TestCompletionCandidatesHostAddFlags(t *testing.T) {
+	got := completionCandidates([]string{"host", "add"}, "--")
+	want := []string{"--hostname", "--key", "--port", "--user"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("got=%v want=%v", got, want)
+	}
+}
+
 func TestCompletionCandidatesTopLevelShellBuiltins(t *testing.T) {
 	got := completionCandidates(nil, "p")
 	want := []string{"passwd", "pwd"}

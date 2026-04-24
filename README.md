@@ -96,7 +96,7 @@ secssh unlock
 Add a managed host:
 
 ```bash
-secssh host add prod --hostname 10.0.0.10 --user root --port 22
+secssh host add prod --hostname 10.0.0.10 --user root --port 22 --key prod
 ```
 
 Generate a key and copy it to the host:
@@ -145,7 +145,7 @@ secssh secret add <name>
 secssh secret rm <name>
 secssh secret list
 
-secssh host add <alias> --hostname <host> [--port 22] [--user <user>]
+secssh host add <alias> --hostname <host> [--port 22] [--user <user>] [--key <key-name>]
 secssh host rm <alias>
 secssh host list
 secssh host auth set <alias> --mode <key|password|auto|ask> [...]

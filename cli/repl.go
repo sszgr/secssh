@@ -350,7 +350,7 @@ func completionCandidates(path []string, current string) []string {
 				base = []string{"set"}
 			}
 			if path[1] == "add" {
-				base = []string{"--hostname", "--port", "--user"}
+				base = []string{"--hostname", "--key", "--port", "--user"}
 			}
 		case "config":
 			if path[1] == "set" {
@@ -378,7 +378,7 @@ func completionCandidates(path []string, current string) []string {
 			base = []string{"--mode", "--password-policy", "--password-ref"}
 		}
 		if len(path) >= 2 && path[0] == "host" && path[1] == "add" {
-			base = []string{"--hostname", "--port", "--user"}
+			base = []string{"--hostname", "--key", "--port", "--user"}
 		}
 		if len(path) >= 2 && path[0] == "key" && path[1] == "copy" {
 			base = []string{"--auth", "--prompt", "--use-secret"}

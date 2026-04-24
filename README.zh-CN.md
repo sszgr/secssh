@@ -96,7 +96,7 @@ secssh unlock
 添加一个受管主机：
 
 ```bash
-secssh host add prod --hostname 10.0.0.10 --user root --port 22
+secssh host add prod --hostname 10.0.0.10 --user root --port 22 --key prod
 ```
 
 生成密钥并复制到主机：
@@ -145,7 +145,7 @@ secssh secret add <name>
 secssh secret rm <name>
 secssh secret list
 
-secssh host add <alias> --hostname <host> [--port 22] [--user <user>]
+secssh host add <alias> --hostname <host> [--port 22] [--user <user>] [--key <key-name>]
 secssh host rm <alias>
 secssh host list
 secssh host auth set <alias> --mode <key|password|auto|ask> [...]

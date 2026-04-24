@@ -2,7 +2,10 @@ package cli
 
 import (
 	"reflect"
+	"strings"
 	"testing"
+
+	"github.com/sszgr/secssh/vault"
 )
 
 func TestParseVaultArg(t *testing.T) {
@@ -89,5 +92,15 @@ func TestResolveSCPRemoteTarget(t *testing.T) {
 	}
 	if target != "prod" {
 		t.Fatalf("unexpected target: %s", target)
+	}
+}
+
+func TestMergeManagedHostsConfigIncludesKeyRef(t *testing.T) {
+	cfg := mergeManagedHostsConfig("", map[string]vault.HostMachine{
+		"prod": {HostName: "10.0.0.10", User: "root", Port: 22, KeyRef: "prod-key"},
+	})
+
+	if !strings.Contains(cfg, "IdentityFile secssh://keys/prod-key") {
+		t.Fatalf("expected IdentityFile key ref, got:\n%s", cfg)
 	}
 }

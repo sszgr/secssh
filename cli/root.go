@@ -251,19 +251,24 @@ func newRootCommand(app *workspace.SessionManager, ref vaultRef) *cobra.Command 
 	root.AddCommand(secretCmd)
 
 	hostCmd := &cobra.Command{Use: "host", Short: "Manage host policies"}
-	hostAddHostName, hostAddUser := "", ""
+	hostAddHostName, hostAddUser, hostAddKey := "", "", ""
 	hostAddPort := 22
 	hostAddCmd := &cobra.Command{
 		Use:   "add <alias>",
 		Short: "Add managed host machine",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return codeErr(cmdHost([]string{"add", args[0], "--hostname", hostAddHostName, "--port", fmt.Sprintf("%d", hostAddPort), "--user", hostAddUser}, ref))
+			hostArgs := []string{"add", args[0], "--hostname", hostAddHostName, "--port", fmt.Sprintf("%d", hostAddPort), "--user", hostAddUser}
+			if strings.TrimSpace(hostAddKey) != "" {
+				hostArgs = append(hostArgs, "--key", hostAddKey)
+			}
+			return codeErr(cmdHost(hostArgs, ref))
 		},
 	}
 	hostAddCmd.Flags().StringVar(&hostAddHostName, "hostname", "", "remote host name or IP")
 	hostAddCmd.Flags().IntVar(&hostAddPort, "port", 22, "ssh port")
 	hostAddCmd.Flags().StringVar(&hostAddUser, "user", "", "default ssh user")
+	hostAddCmd.Flags().StringVar(&hostAddKey, "key", "", "stored private key name to use for this host")
 	_ = hostAddCmd.MarkFlagRequired("hostname")
 	hostCmd.AddCommand(hostAddCmd)
 
@@ -353,7 +358,7 @@ func usage() {
   secssh secret add <name>
   secssh secret rm <name>
   secssh secret list
-  secssh host add <alias> --hostname <host> [--port 22] [--user <user>]
+  secssh host add <alias> --hostname <host> [--port 22] [--user <user>] [--key <key-name>]
   secssh host rm <alias>
   secssh host list
   secssh host auth set <alias> ...
@@ -845,7 +850,7 @@ func cmdHost(args []string, ref vaultRef) int {
 	switch args[0] {
 	case "add":
 		if len(args) < 2 {
-			return usageErr("usage: secssh host add <alias> --hostname <host> [--port 22] [--user <user>]")
+			return usageErr("usage: secssh host add <alias> --hostname <host> [--port 22] [--user <user>] [--key <key-name>]")
 		}
 		alias := strings.TrimSpace(args[1])
 		if alias == "" {
@@ -855,6 +860,7 @@ func cmdHost(args []string, ref vaultRef) int {
 		hostname := fs.String("hostname", "", "remote host name or IP")
 		user := fs.String("user", "", "ssh user")
 		port := fs.Int("port", 22, "ssh port")
+		keyRef := fs.String("key", "", "stored private key name")
 		if err := fs.Parse(args[2:]); err != nil {
 			return 2
 		}
@@ -871,10 +877,17 @@ func cmdHost(args []string, ref vaultRef) int {
 		if err != nil {
 			return cmdErr("host add", err)
 		}
+		keyName := strings.TrimSpace(*keyRef)
+		if keyName != "" {
+			if _, ok := payload.Keys[keyName]; !ok {
+				return cmdErr("host add", fmt.Errorf("key not found: %s", keyName))
+			}
+		}
 		payload.Machines[alias] = vault.HostMachine{
 			HostName: strings.TrimSpace(*hostname),
 			User:     strings.TrimSpace(*user),
 			Port:     *port,
+			KeyRef:   keyName,
 		}
 		if err := saveVault(ref, password, header, payload); err != nil {
 			return cmdErr("host add", err)
