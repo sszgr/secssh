@@ -31,9 +31,11 @@
   - 支持受管主机别名：`host add/rm/list`
   - 每个主机可单独设置认证模式：`key`、`password`、`auto`、`ask`
   - 可选密码策略：`stored`、`prompt`、`session`
-- 交互式 Shell：
-  - 直接运行 `secssh` 进入 `secssh>` 模式
-  - 支持 TAB 补全
+- 环境 Shell：
+  - 直接运行 `secssh` 进入 `(secssh) <cwd> >` 模式
+  - 使用 `:<command>` 调用 secssh 内置命令，裸命令交给主机 shell
+  - 支持 secssh 命令、系统命令和路径的 TAB 补全
+  - 裸 `exit`/`quit` 或 `:exit`/`:quit` 退出 Shell
   - `Ctrl-C` 中断当前输入但不退出
   - `Ctrl-D` 退出 Shell
 
@@ -99,6 +101,14 @@ secssh unlock
 secssh host add prod --hostname 10.0.0.10 --user root --port 22 --key prod
 ```
 
+添加一个使用存储密码的受管主机：
+
+```bash
+secssh host add prod --hostname 10.0.0.10 --user root --password
+```
+
+也可以使用 `--password-value <value>` 便于脚本化，但不推荐，因为密码可能出现在 shell history 或进程参数中。
+
 生成密钥并复制到主机：
 
 ```bash
@@ -146,6 +156,7 @@ secssh secret rm <name>
 secssh secret list
 
 secssh host add <alias> --hostname <host> [--port 22] [--user <user>] [--key <key-name>]
+secssh host add <alias> --hostname <host> [--password|--password-value <value>] [--password-name <secret>]
 secssh host rm <alias>
 secssh host list
 secssh host auth set <alias> --mode <key|password|auto|ask> [...]
@@ -154,6 +165,24 @@ secssh passwd
 
 secssh crypto show
 secssh crypto set --kdf <name> --cipher <name>
+```
+
+## 环境 Shell
+
+不带参数运行 `secssh` 会进入环境 Shell。在这个 Shell 中，secssh 内置命令使用 `:` 前缀：
+
+```text
+(secssh) /work/project > :status
+(secssh) /work/project > :host list
+(secssh) /work/project > :ssh prod
+```
+
+裸命令会交给主机 shell 执行：
+
+```text
+(secssh) /work/project > git status
+(secssh) /work/project > cd /tmp
+(secssh) /tmp > :scp local.txt prod:/tmp/
 ```
 
 ## 安全说明

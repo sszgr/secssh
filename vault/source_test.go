@@ -12,6 +12,7 @@ import (
 func TestResolveSourceDefaultPathFallsBackToHome(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
 	wd := t.TempDir()
 	t.Chdir(wd)
 
@@ -31,6 +32,7 @@ func TestResolveSourceDefaultPathFallsBackToHome(t *testing.T) {
 func TestResolveSourceDefaultPathPrefersCurrentDir(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
 	wd := t.TempDir()
 	t.Chdir(wd)
 
@@ -54,6 +56,7 @@ func TestResolveSourceDefaultPathPrefersCurrentDir(t *testing.T) {
 func TestResolveSourceDefaultPathRejectsInvalidCurrentDirFile(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
 	wd := t.TempDir()
 	t.Chdir(wd)
 

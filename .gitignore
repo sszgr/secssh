@@ -30,6 +30,9 @@ go.work.sum
 .env
 .DS_Store
 
+# Internal local docs
+/docs/internal/
+
 # Editor/IDE
 .idea/
 .vscode/

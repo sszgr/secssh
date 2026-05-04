@@ -86,11 +86,21 @@ func TestResolveAuthArgsPassword(t *testing.T) {
 		"-o", "PasswordAuthentication=yes",
 		"-o", "KbdInteractiveAuthentication=yes",
 		"-o", "PreferredAuthentications=keyboard-interactive,password",
+		"-o", "NumberOfPasswordPrompts=1",
 	}
 	if !reflect.DeepEqual(args, wantArgs) {
 		t.Fatalf("unexpected auth args: got=%v want=%v", args, wantArgs)
 	}
 	if pw != "s3cr3t" {
 		t.Fatalf("expected stored secret, got %q", pw)
+	}
+}
+
+func TestResolvePasswordStoredRejectsEmpty(t *testing.T) {
+	opts := Options{Target: "prod"}
+	cfg := vault.HostAuth{PasswordPolicy: "stored", PasswordRef: "pwd-prod"}
+	_, err := resolvePassword(opts, "prod", cfg, &vault.Payload{Secrets: map[string]string{"pwd-prod": "  "}})
+	if err == nil {
+		t.Fatalf("expected empty password error")
 	}
 }

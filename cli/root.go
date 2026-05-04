@@ -50,6 +50,9 @@ func Run(args []string) int {
 	if len(args) == 0 {
 		return runREPL(app, ref)
 	}
+	if len(args) == 1 && (args[0] == "enter" || args[0] == "env") {
+		return runREPL(app, ref)
+	}
 	return runCommand(args, app, ref)
 }
 
@@ -252,6 +255,8 @@ func newRootCommand(app *workspace.SessionManager, ref vaultRef) *cobra.Command 
 
 	hostCmd := &cobra.Command{Use: "host", Short: "Manage host policies"}
 	hostAddHostName, hostAddUser, hostAddKey := "", "", ""
+	hostAddPasswordValue, hostAddPasswordName := "", ""
+	hostAddPassword := false
 	hostAddPort := 22
 	hostAddCmd := &cobra.Command{
 		Use:   "add <alias>",
@@ -262,6 +267,15 @@ func newRootCommand(app *workspace.SessionManager, ref vaultRef) *cobra.Command 
 			if strings.TrimSpace(hostAddKey) != "" {
 				hostArgs = append(hostArgs, "--key", hostAddKey)
 			}
+			if hostAddPassword {
+				hostArgs = append(hostArgs, "--password")
+			}
+			if strings.TrimSpace(hostAddPasswordValue) != "" {
+				hostArgs = append(hostArgs, "--password-value", hostAddPasswordValue)
+			}
+			if strings.TrimSpace(hostAddPasswordName) != "" {
+				hostArgs = append(hostArgs, "--password-name", hostAddPasswordName)
+			}
 			return codeErr(cmdHost(hostArgs, ref))
 		},
 	}
@@ -269,6 +283,9 @@ func newRootCommand(app *workspace.SessionManager, ref vaultRef) *cobra.Command 
 	hostAddCmd.Flags().IntVar(&hostAddPort, "port", 22, "ssh port")
 	hostAddCmd.Flags().StringVar(&hostAddUser, "user", "", "default ssh user")
 	hostAddCmd.Flags().StringVar(&hostAddKey, "key", "", "stored private key name to use for this host")
+	hostAddCmd.Flags().BoolVar(&hostAddPassword, "password", false, "prompt and store SSH password for this host")
+	hostAddCmd.Flags().StringVar(&hostAddPasswordValue, "password-value", "", "store SSH password from command line (not recommended)")
+	hostAddCmd.Flags().StringVar(&hostAddPasswordName, "password-name", "", "secret name for stored SSH password")
 	_ = hostAddCmd.MarkFlagRequired("hostname")
 	hostCmd.AddCommand(hostAddCmd)
 
@@ -358,7 +375,7 @@ func usage() {
   secssh secret add <name>
   secssh secret rm <name>
   secssh secret list
-  secssh host add <alias> --hostname <host> [--port 22] [--user <user>] [--key <key-name>]
+  secssh host add <alias> --hostname <host> [--port 22] [--user <user>] [--key <key-name>] [--password|--password-value <value>]
   secssh host rm <alias>
   secssh host list
   secssh host auth set <alias> ...
@@ -850,7 +867,7 @@ func cmdHost(args []string, ref vaultRef) int {
 	switch args[0] {
 	case "add":
 		if len(args) < 2 {
-			return usageErr("usage: secssh host add <alias> --hostname <host> [--port 22] [--user <user>] [--key <key-name>]")
+			return usageErr("usage: secssh host add <alias> --hostname <host> [--port 22] [--user <user>] [--key <key-name>] [--password|--password-value <value>] [--password-name <secret>]")
 		}
 		alias := strings.TrimSpace(args[1])
 		if alias == "" {
@@ -861,6 +878,9 @@ func cmdHost(args []string, ref vaultRef) int {
 		user := fs.String("user", "", "ssh user")
 		port := fs.Int("port", 22, "ssh port")
 		keyRef := fs.String("key", "", "stored private key name")
+		passwordPrompt := fs.Bool("password", false, "prompt and store SSH password")
+		passwordValue := fs.String("password-value", "", "SSH password value (not recommended)")
+		passwordName := fs.String("password-name", "", "secret name for stored SSH password")
 		if err := fs.Parse(args[2:]); err != nil {
 			return 2
 		}
@@ -869,6 +889,9 @@ func cmdHost(args []string, ref vaultRef) int {
 		}
 		if *port <= 0 || *port > 65535 {
 			return usageErr("--port must be in range 1..65535")
+		}
+		if *passwordPrompt && *passwordValue != "" {
+			return usageErr("--password and --password-value cannot be used together")
 		}
 		if err := ensureWritable(ref, "host add"); err != nil {
 			return cmdErr("host add", err)
@@ -888,6 +911,35 @@ func cmdHost(args []string, ref vaultRef) int {
 			User:     strings.TrimSpace(*user),
 			Port:     *port,
 			KeyRef:   keyName,
+		}
+		if *passwordPrompt || *passwordValue != "" {
+			pw := *passwordValue
+			if *passwordPrompt {
+				prompted, err := promptPassword("SSH password: ")
+				if err != nil {
+					return cmdErr("host add", err)
+				}
+				pw = string(prompted)
+			}
+			if strings.TrimSpace(pw) == "" {
+				return usageErr("empty SSH password is not allowed")
+			}
+			secretName := strings.TrimSpace(*passwordName)
+			if secretName == "" {
+				secretName = defaultHostPasswordSecretName(alias)
+			}
+			if payload.Secrets == nil {
+				payload.Secrets = map[string]string{}
+			}
+			if payload.Hosts == nil {
+				payload.Hosts = map[string]vault.HostAuth{}
+			}
+			payload.Secrets[secretName] = pw
+			payload.Hosts[alias] = vault.HostAuth{
+				Mode:           "password",
+				PasswordPolicy: "stored",
+				PasswordRef:    secretName,
+			}
 		}
 		if err := saveVault(ref, password, header, payload); err != nil {
 			return cmdErr("host add", err)
@@ -1328,6 +1380,10 @@ func defaultText(v, fallback string) string {
 		return fallback
 	}
 	return v
+}
+
+func defaultHostPasswordSecretName(alias string) string {
+	return "host:" + strings.TrimSpace(alias) + ":password"
 }
 
 func portOrDefault(port, fallback int) int {

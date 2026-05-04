@@ -236,6 +236,7 @@ func resolveAuthArgs(opts Options, payload *vault.Payload) (authArgs []string, p
 			"-o", "PasswordAuthentication=yes",
 			"-o", "KbdInteractiveAuthentication=yes",
 			"-o", "PreferredAuthentications=keyboard-interactive,password",
+			"-o", "NumberOfPasswordPrompts=1",
 		}, pw, nil
 	default:
 		return nil, "", fmt.Errorf("unsupported auth mode: %s", mode)
@@ -244,14 +245,14 @@ func resolveAuthArgs(opts Options, payload *vault.Payload) (authArgs []string, p
 
 func resolvePassword(opts Options, hostAlias string, cfg vault.HostAuth, payload *vault.Payload) (string, error) {
 	if opts.Prompt {
-		return promptSecret("SSH password: ")
+		return requireNonEmptyPassword(promptSecret("SSH password: "))
 	}
 	if opts.UseSecret != "" {
 		v, ok := payload.Secrets[opts.UseSecret]
 		if !ok {
 			return "", fmt.Errorf("secret not found: %s", opts.UseSecret)
 		}
-		return v, nil
+		return requireNonEmptyPassword(v, nil)
 	}
 	policy := strings.TrimSpace(cfg.PasswordPolicy)
 	if policy == "" {
@@ -259,14 +260,14 @@ func resolvePassword(opts Options, hostAlias string, cfg vault.HostAuth, payload
 	}
 	switch policy {
 	case "prompt":
-		return promptSecret("SSH password: ")
+		return requireNonEmptyPassword(promptSecret("SSH password: "))
 	case "session":
 		cacheKey := sessionCacheKey(hostAlias, opts, cfg)
 		now := time.Now()
 		if v, ok := workspace.GetCachedPassword(cacheKey, now); ok {
-			return v, nil
+			return requireNonEmptyPassword(v, nil)
 		}
-		pw, err := promptSecret("SSH password: ")
+		pw, err := requireNonEmptyPassword(promptSecret("SSH password: "))
 		if err != nil {
 			return "", err
 		}
@@ -284,10 +285,20 @@ func resolvePassword(opts Options, hostAlias string, cfg vault.HostAuth, payload
 		if !ok {
 			return "", fmt.Errorf("secret not found: %s", cfg.PasswordRef)
 		}
-		return v, nil
+		return requireNonEmptyPassword(v, nil)
 	default:
 		return "", fmt.Errorf("unsupported password policy: %s", policy)
 	}
+}
+
+func requireNonEmptyPassword(password string, err error) (string, error) {
+	if err != nil {
+		return "", err
+	}
+	if strings.TrimSpace(password) == "" {
+		return "", errors.New("empty SSH password is not allowed")
+	}
+	return password, nil
 }
 
 func sessionCacheKey(hostAlias string, opts Options, cfg vault.HostAuth) string {

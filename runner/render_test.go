@@ -3,6 +3,7 @@ package runner
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -31,6 +32,9 @@ func TestRenderConfigRewritesIdentityFile(t *testing.T) {
 	st, err := os.Stat(keyPath)
 	if err != nil {
 		t.Fatalf("stat key file failed: %v", err)
+	}
+	if runtime.GOOS == "windows" {
+		return
 	}
 	if st.Mode().Perm() != 0o600 {
 		t.Fatalf("unexpected key file mode: %o", st.Mode().Perm())

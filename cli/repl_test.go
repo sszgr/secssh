@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"io"
 	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -49,15 +50,15 @@ func TestParseCommandLineUnterminatedQuote(t *testing.T) {
 }
 
 func TestCompletionCandidatesTopLevel(t *testing.T) {
-	got := completionCandidates(nil, "st")
-	want := []string{"status"}
+	got := completionCandidates(nil, ":st")
+	want := []string{":status"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("got=%v want=%v", got, want)
 	}
 }
 
 func TestCompletionCandidatesKeySubcommands(t *testing.T) {
-	got := completionCandidates([]string{"key"}, "g")
+	got := completionCandidates([]string{":key"}, "g")
 	want := []string{"gen"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("got=%v want=%v", got, want)
@@ -65,39 +66,30 @@ func TestCompletionCandidatesKeySubcommands(t *testing.T) {
 }
 
 func TestCompletionCandidatesHostAddFlags(t *testing.T) {
-	got := completionCandidates([]string{"host", "add"}, "--")
-	want := []string{"--hostname", "--key", "--port", "--user"}
+	got := completionCandidates([]string{":host", "add"}, "--")
+	want := []string{"--hostname", "--key", "--password", "--password-name", "--password-value", "--port", "--user"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("got=%v want=%v", got, want)
 	}
 }
 
-func TestCompletionCandidatesTopLevelShellBuiltins(t *testing.T) {
+func TestCompletionCandidatesBareInputDoesNotCompleteSecsshCommands(t *testing.T) {
 	got := completionCandidates(nil, "p")
-	want := []string{"passwd", "pwd"}
-	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("got=%v want=%v", got, want)
-	}
-}
-
-func TestCompletionCandidatesRemoteBuiltins(t *testing.T) {
-	got := completionCandidates(nil, "r")
-	want := []string{"rls", "rpwd"}
-	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("got=%v want=%v", got, want)
+	if len(got) != 0 {
+		t.Fatalf("got=%v want no secssh completions", got)
 	}
 }
 
 func TestCompletionCandidatesHistory(t *testing.T) {
-	got := completionCandidates(nil, "h")
-	want := []string{"help", "history", "host"}
+	got := completionCandidates(nil, ":h")
+	want := []string{":help", ":history", ":host"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("got=%v want=%v", got, want)
 	}
 }
 
 func TestCompletionCandidatesHistorySubcommands(t *testing.T) {
-	got := completionCandidates([]string{"history"}, "")
+	got := completionCandidates([]string{":history"}, "")
 	want := []string{"clear", "limit"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("got=%v want=%v", got, want)
@@ -204,28 +196,6 @@ func TestWantsBuiltinHelp(t *testing.T) {
 	}
 }
 
-func TestHandleREPLHelpBuiltin(t *testing.T) {
-	out := captureStdout(t, func() {
-		if !handleREPLHelp([]string{"ls"}) {
-			t.Fatalf("expected ls builtin help to be handled")
-		}
-	})
-	if !strings.Contains(out, "ls [path]") {
-		t.Fatalf("expected ls help output, got %q", out)
-	}
-}
-
-func TestHandleREPLHelpRemoteBuiltin(t *testing.T) {
-	out := captureStdout(t, func() {
-		if !handleREPLHelp([]string{"rls"}) {
-			t.Fatalf("expected rls builtin help to be handled")
-		}
-	})
-	if !strings.Contains(out, "rls <host> [path]") {
-		t.Fatalf("expected rls help output, got %q", out)
-	}
-}
-
 func TestHandleREPLHelpHistory(t *testing.T) {
 	out := captureStdout(t, func() {
 		if !handleREPLHelp([]string{"history"}) {
@@ -235,6 +205,131 @@ func TestHandleREPLHelpHistory(t *testing.T) {
 	if !strings.Contains(out, "history clear") || !strings.Contains(out, "history limit <n>") {
 		t.Fatalf("expected history help output, got %q", out)
 	}
+}
+
+func TestHandleREPLLineExitBareAndPrefixed(t *testing.T) {
+	if !handleREPLLine("exit", nil, vaultRef{}, nil, nil) {
+		t.Fatalf("expected bare exit to quit")
+	}
+	if !handleREPLLine(":exit", nil, vaultRef{}, nil, nil) {
+		t.Fatalf("expected :exit to quit")
+	}
+	if !handleREPLLine("quit", nil, vaultRef{}, nil, nil) {
+		t.Fatalf("expected bare quit to quit")
+	}
+}
+
+func TestHostCommandCompletionFallsBackToPath(t *testing.T) {
+	dir := t.TempDir()
+	name := "tabcmd-test"
+	if err := os.WriteFile(filepath.Join(dir, name), []byte(""), 0o755); err != nil {
+		t.Fatalf("write test executable: %v", err)
+	}
+	t.Setenv("PATH", dir)
+
+	got := hostCommandCandidates("tabcmd")
+	if !containsString(got, name) {
+		t.Fatalf("expected %q in completions, got %v", name, got)
+	}
+}
+
+func TestHostPathCompletionFallback(t *testing.T) {
+	old, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("Getwd failed: %v", err)
+	}
+	dir := t.TempDir()
+	defer func() { _ = os.Chdir(old) }()
+	if err := os.Chdir(dir); err != nil {
+		t.Fatalf("chdir: %v", err)
+	}
+	if err := os.WriteFile("tab-file.txt", []byte("x"), 0o600); err != nil {
+		t.Fatalf("write file: %v", err)
+	}
+
+	got := hostPathCandidates("tab-fi")
+	if !containsString(got, "tab-file.txt") {
+		t.Fatalf("expected file completion, got %v", got)
+	}
+}
+
+func TestPersistentCdChangesWorkingDirectory(t *testing.T) {
+	old, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("Getwd failed: %v", err)
+	}
+	defer func() { _ = os.Chdir(old) }()
+
+	env := &replEnv{}
+	dir := t.TempDir()
+	if code := runPersistentCd([]string{dir}, env); code != 0 {
+		t.Fatalf("cd failed with code %d", code)
+	}
+	got, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("Getwd after cd failed: %v", err)
+	}
+	if got != dir {
+		t.Fatalf("got cwd=%q want=%q", got, dir)
+	}
+	if env.previousDir != old {
+		t.Fatalf("got previousDir=%q want=%q", env.previousDir, old)
+	}
+}
+
+func TestPersistentCdDetection(t *testing.T) {
+	args, ok, err := parsePersistentCdLine("cd '/tmp/my dir'")
+	if err != nil || !ok || !reflect.DeepEqual(args, []string{"/tmp/my dir"}) {
+		t.Fatalf("expected simple quoted cd to be persistent")
+	}
+	if _, ok, err := parsePersistentCdLine("cd /tmp && pwd"); err != nil || ok {
+		t.Fatalf("did not expect compound cd to be persistent")
+	}
+	if _, ok, err := parsePersistentCdLine("pwd"); err != nil || ok {
+		t.Fatalf("did not expect pwd to be persistent cd")
+	}
+	args, ok, err = parsePersistentCdLine(`cd C:\Users\admin\project`)
+	if err != nil || !ok || !reflect.DeepEqual(args, []string{`C:\Users\admin\project`}) {
+		t.Fatalf("expected windows path to preserve backslashes, got args=%v ok=%v err=%v", args, ok, err)
+	}
+}
+
+func TestSelectHostShellUnix(t *testing.T) {
+	got := selectHostShell("linux", func(key string) string {
+		if key == "SHELL" {
+			return "/bin/zsh"
+		}
+		return ""
+	}, func(string) (string, error) {
+		t.Fatalf("lookPath should not be called for unix shell")
+		return "", nil
+	})
+	want := shellSpec{Path: "/bin/zsh", Args: []string{"-lc"}}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("got=%v want=%v", got, want)
+	}
+}
+
+func TestSelectHostShellWindowsFallbacks(t *testing.T) {
+	got := selectHostShell("windows", func(string) string { return "" }, func(name string) (string, error) {
+		if name == "powershell.exe" {
+			return `C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe`, nil
+		}
+		return "", os.ErrNotExist
+	})
+	want := shellSpec{Path: `C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe`, Args: []string{"-NoLogo", "-NoProfile", "-Command"}}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("got=%v want=%v", got, want)
+	}
+}
+
+func containsString(values []string, want string) bool {
+	for _, v := range values {
+		if v == want {
+			return true
+		}
+	}
+	return false
 }
 
 func captureStdout(t *testing.T, fn func()) string {

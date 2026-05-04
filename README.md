@@ -31,9 +31,11 @@ Managing SSH access usually means scattering `ssh_config`, keys, and passwords a
   - managed host aliases with `host add/rm/list`
   - per-host auth mode: `key`, `password`, `auto`, `ask`
   - optional password policy: `stored`, `prompt`, `session`
-- Interactive shell:
-  - run `secssh` directly for `secssh>` mode
-  - TAB completion
+- Environment shell:
+  - run `secssh` directly for `(secssh) <cwd> >` mode
+  - use `:<command>` for secssh built-ins and bare commands for the host shell
+  - TAB completion for secssh commands, host commands, and paths
+  - bare `exit`/`quit` or `:exit`/`:quit` exits the shell
   - `Ctrl-C` interrupts current input without exiting
   - `Ctrl-D` exits the shell
 
@@ -99,6 +101,14 @@ Add a managed host:
 secssh host add prod --hostname 10.0.0.10 --user root --port 22 --key prod
 ```
 
+Add a managed host with a stored SSH password:
+
+```bash
+secssh host add prod --hostname 10.0.0.10 --user root --password
+```
+
+`--password-value <value>` is also available for scripts, but it is not recommended because the password can be exposed through shell history or process arguments.
+
 Generate a key and copy it to the host:
 
 ```bash
@@ -146,6 +156,7 @@ secssh secret rm <name>
 secssh secret list
 
 secssh host add <alias> --hostname <host> [--port 22] [--user <user>] [--key <key-name>]
+secssh host add <alias> --hostname <host> [--password|--password-value <value>] [--password-name <secret>]
 secssh host rm <alias>
 secssh host list
 secssh host auth set <alias> --mode <key|password|auto|ask> [...]
@@ -154,6 +165,24 @@ secssh passwd
 
 secssh crypto show
 secssh crypto set --kdf <name> --cipher <name>
+```
+
+## Environment Shell
+
+Run `secssh` without arguments to enter the environment shell. Inside this shell, secssh commands use a `:` prefix:
+
+```text
+(secssh) /work/project > :status
+(secssh) /work/project > :host list
+(secssh) /work/project > :ssh prod
+```
+
+Bare commands are executed by the host shell:
+
+```text
+(secssh) /work/project > git status
+(secssh) /work/project > cd /tmp
+(secssh) /tmp > :scp local.txt prod:/tmp/
 ```
 
 ## Security Notes

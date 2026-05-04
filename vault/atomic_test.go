@@ -3,6 +3,7 @@ package vault
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 )
 
@@ -24,7 +25,7 @@ func TestAtomicWriteCreatesAndReplaces(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Stat failed: %v", err)
 	}
-	if st.Mode().Perm() != 0o600 {
+	if runtime.GOOS != "windows" && st.Mode().Perm() != 0o600 {
 		t.Fatalf("unexpected mode: %o", st.Mode().Perm())
 	}
 

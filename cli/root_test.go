@@ -1,11 +1,14 @@
 package cli
 
 import (
+	"os"
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/sszgr/secssh/vault"
+	"github.com/sszgr/secssh/workspace"
 )
 
 func TestParseVaultArg(t *testing.T) {
@@ -102,5 +105,68 @@ func TestMergeManagedHostsConfigIncludesKeyRef(t *testing.T) {
 
 	if !strings.Contains(cfg, "IdentityFile secssh://keys/prod-key") {
 		t.Fatalf("expected IdentityFile key ref, got:\n%s", cfg)
+	}
+}
+
+func TestCmdHostAddStoresPasswordValue(t *testing.T) {
+	dir := t.TempDir()
+	path := dir + string(os.PathSeparator) + "vault.enc"
+	password := []byte("vault-pass")
+	if err := vault.Initialize(path, password); err != nil {
+		t.Fatalf("Initialize failed: %v", err)
+	}
+	workspace.PutVaultPassword(path, password, time.Now().Add(time.Minute))
+	defer workspace.ClearVaultPasswords()
+
+	ref := vaultRef{Source: path, Path: path}
+	code := cmdHost([]string{
+		"add", "prod",
+		"--hostname", "10.0.0.10",
+		"--user", "root",
+		"--password-value", "ssh-pass",
+		"--password-name", "prod-password",
+	}, ref)
+	if code != 0 {
+		t.Fatalf("cmdHost add failed with code %d", code)
+	}
+
+	_, payload, err := vault.Load(path, password)
+	if err != nil {
+		t.Fatalf("Load failed: %v", err)
+	}
+	if got := payload.Secrets["prod-password"]; got != "ssh-pass" {
+		t.Fatalf("unexpected stored password %q", got)
+	}
+	auth := payload.Hosts["prod"]
+	if auth.Mode != "password" || auth.PasswordPolicy != "stored" || auth.PasswordRef != "prod-password" {
+		t.Fatalf("unexpected host auth: %+v", auth)
+	}
+}
+
+func TestCmdHostAddPasswordValueDefaultName(t *testing.T) {
+	dir := t.TempDir()
+	path := dir + string(os.PathSeparator) + "vault.enc"
+	password := []byte("vault-pass")
+	if err := vault.Initialize(path, password); err != nil {
+		t.Fatalf("Initialize failed: %v", err)
+	}
+	workspace.PutVaultPassword(path, password, time.Now().Add(time.Minute))
+	defer workspace.ClearVaultPasswords()
+
+	ref := vaultRef{Source: path, Path: path}
+	code := cmdHost([]string{"add", "prod", "--hostname", "10.0.0.10", "--password-value", "ssh-pass"}, ref)
+	if code != 0 {
+		t.Fatalf("cmdHost add failed with code %d", code)
+	}
+	_, payload, err := vault.Load(path, password)
+	if err != nil {
+		t.Fatalf("Load failed: %v", err)
+	}
+	wantName := defaultHostPasswordSecretName("prod")
+	if got := payload.Secrets[wantName]; got != "ssh-pass" {
+		t.Fatalf("unexpected stored password %q for %s", got, wantName)
+	}
+	if payload.Hosts["prod"].PasswordRef != wantName {
+		t.Fatalf("unexpected password ref: %+v", payload.Hosts["prod"])
 	}
 }
