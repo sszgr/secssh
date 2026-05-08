@@ -38,6 +38,26 @@ func TestParseVaultArgEqualsForm(t *testing.T) {
 	}
 }
 
+func TestWantsVersion(t *testing.T) {
+	for _, args := range [][]string{{"version"}, {"--version"}, {"-v"}} {
+		if !wantsVersion(args) {
+			t.Fatalf("expected %v to request version", args)
+		}
+	}
+	if wantsVersion([]string{"version", "extra"}) {
+		t.Fatalf("did not expect extra args to request version")
+	}
+}
+
+func TestVersionString(t *testing.T) {
+	got := versionString(buildInfo{Version: "v1", Commit: "abc123", BuildTime: "2026-05-08T00:00:00Z"})
+	for _, want := range []string{"secssh v1", "commit: abc123", "built: 2026-05-08T00:00:00Z"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("version output missing %q: %q", want, got)
+		}
+	}
+}
+
 func TestParseGlobalArgsPrefix(t *testing.T) {
 	args, opts, err := parseGlobalArgs([]string{"--prefix", ".", "--vault=/tmp/vault.enc", "env"})
 	if err != nil {

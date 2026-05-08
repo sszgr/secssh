@@ -33,8 +33,9 @@ Managing SSH access usually means scattering `ssh_config`, keys, and passwords a
   - optional password policy: `stored`, `prompt`, `session`
 - Environment shell:
   - run `secssh` directly for `(secssh) <cwd> >` mode
-  - use `:<command>` for secssh built-ins and bare commands for the host shell
-  - TAB completion for secssh commands, host commands, and paths
+  - use `:<command>` for secssh built-ins by default, with a configurable prefix
+  - run bare commands through the host shell
+  - TAB completion for secssh commands, host commands, and paths; directories complete with `/`
   - bare `exit`/`quit` or `:exit`/`:quit` exits the shell
   - `Ctrl-C` interrupts current input without exiting
   - `Ctrl-D` exits the shell
@@ -54,7 +55,7 @@ That keeps runtime behavior close to standard OpenSSH while centralizing sensiti
 ## Requirements
 
 - Go `1.24+`
-- OpenSSH client tools (`ssh`)
+- OpenSSH client tools (`ssh`, `scp`, `sftp`)
 - `ssh-keygen` for `key gen` and related workflows
 - Linux/macOS preferred
 
@@ -65,6 +66,8 @@ Use the provided Make targets:
 ```bash
 make build
 make test
+make run
+make run PREFIX=.
 make build-one PLATFORM=linux/amd64 VERSION=v0.1.0
 make build-cross VERSION=v0.1.0
 ```
@@ -76,11 +79,39 @@ Build outputs:
 
 ## Quick Start
 
-By default, `secssh` uses `./vault.enc` when it exists, otherwise it falls back to `~/.secssh/vault.enc`. You can also point `secssh` at a custom vault source with `--vault`. A remote `http(s)` vault is downloaded to a local cache and treated as read-only.
+Initialize or unlock the vault:
 
 ```bash
-secssh --vault https://example.com/vault.enc status
+secssh unlock
 ```
+
+Generate a key:
+
+```bash
+secssh key gen prod-key
+```
+
+Add a managed host that will use that key:
+
+```bash
+secssh host add prod --hostname 10.0.0.10 --user root --port 22 --key prod-key
+```
+
+Copy the public key to the host, then switch the host to key auth and connect:
+
+```bash
+secssh key copy prod-key prod
+secssh host auth set prod --mode key
+secssh ssh prod
+```
+
+You can also add a managed host with a stored SSH password:
+
+```bash
+secssh host add prod --hostname 10.0.0.10 --user root --password
+```
+
+`--password-value <value>` is also available for scripts, but it is not recommended because the password can be exposed through shell history or process arguments.
 
 Copy files with `scp` or open an `sftp` session through the same vault-managed runtime:
 
@@ -89,54 +120,27 @@ secssh scp local.txt prod:/tmp/local.txt
 secssh sftp prod
 ```
 
-Initialize or unlock the vault:
-
-```bash
-secssh unlock
-```
-
-Add a managed host:
-
-```bash
-secssh host add prod --hostname 10.0.0.10 --user root --port 22 --key prod
-```
-
-Add a managed host with a stored SSH password:
-
-```bash
-secssh host add prod --hostname 10.0.0.10 --user root --password
-```
-
-`--password-value <value>` is also available for scripts, but it is not recommended because the password can be exposed through shell history or process arguments.
-
-Generate a key and copy it to the host:
-
-```bash
-secssh key gen prod-key
-secssh key copy prod-key prod
-```
-
-Set the host auth mode and connect:
-
-```bash
-secssh host auth set prod --mode key
-secssh ssh prod
-```
-
-Inspect stored hosts and history:
+Inspect stored hosts and connection history:
 
 ```bash
 secssh host list
 ```
 
+By default, `secssh` uses `./vault.enc` when it exists, otherwise it falls back to `~/.secssh/vault.enc`. Use `--vault` to choose a different local vault or a remote `http(s)` vault. Remote vaults are downloaded to a local cache and treated as read-only.
+
+```bash
+secssh --vault https://example.com/vault.enc status
+```
+
 ## Command Summary
 
 ```text
-secssh --vault <path-or-url> <command>
+secssh [--vault <path-or-url>] [--config <path>] [--prefix <char>] <command>
 
 secssh unlock
 secssh lock
 secssh status
+secssh version
 
 secssh ssh <target> -- [ssh args...]
 secssh scp <src> <dst> -- [scp args...]
@@ -175,24 +179,8 @@ Run `secssh` without arguments to enter the environment shell. Inside this shell
 (secssh) /work/project > :status
 (secssh) /work/project > :host list
 (secssh) /work/project > :ssh prod
+(secssh) /work/project > :version
 ```
-
-You can change the environment command prefix with `--prefix` or `SECSSH_PREFIX`:
-
-```bash
-secssh --prefix .
-SECSSH_PREFIX=. secssh
-```
-
-Then commands use the selected prefix, for example `.status` and `.ssh prod`.
-
-For a persistent setting, create `~/.secssh/config`:
-
-```text
-prefix=.
-```
-
-Configuration precedence is `--prefix`, then `SECSSH_PREFIX`, then `~/.secssh/config`, then the default `:`.
 
 Bare commands are executed by the host shell:
 
@@ -201,6 +189,30 @@ Bare commands are executed by the host shell:
 (secssh) /work/project > cd /tmp
 (secssh) /tmp > :scp local.txt prod:/tmp/
 ```
+
+### Shell Configuration
+
+You can change the secssh command prefix with `--prefix`, `SECSSH_PREFIX`, or a config file:
+
+```bash
+secssh --prefix .
+SECSSH_PREFIX=. secssh
+```
+
+For a persistent setting, create `~/.secssh/config`:
+
+```text
+prefix=.
+```
+
+You can also choose a different config path:
+
+```bash
+secssh --config /path/to/config
+SECSSH_CONFIG=/path/to/config secssh
+```
+
+The default config path is `~/.secssh/config`. Configuration precedence is `--prefix`, then `SECSSH_PREFIX`, then the config file, then the default `:`.
 
 ## Security Notes
 

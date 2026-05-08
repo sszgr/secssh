@@ -41,6 +41,10 @@ func Run(args []string) int {
 		fmt.Fprintln(os.Stderr, err)
 		return 2
 	}
+	if wantsVersion(args) {
+		cmdVersion(currentBuildInfo)
+		return 0
+	}
 	source, err := vault.ResolveSource(opts.VaultSource)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "resolve vault source failed: %v\n", err)
@@ -98,6 +102,14 @@ func newRootCommand(app *workspace.SessionManager, ref vaultRef) *cobra.Command 
 	root.PersistentFlags().String("config", "", "secssh user config file path")
 	root.PersistentFlags().String("prefix", ":", "environment shell secssh command prefix")
 
+	root.AddCommand(&cobra.Command{
+		Use:   "version",
+		Short: "Show secssh version information",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			cmdVersion(currentBuildInfo)
+			return nil
+		},
+	})
 	root.AddCommand(&cobra.Command{
 		Use:   "unlock",
 		Short: "Unlock vault session",
@@ -1162,6 +1174,14 @@ func ensureWritable(ref vaultRef, action string) error {
 		return nil
 	}
 	return fmt.Errorf("%s is not supported for remote vault sources; use a local vault path instead", action)
+}
+
+func wantsVersion(args []string) bool {
+	return len(args) == 1 && (args[0] == "version" || args[0] == "--version" || args[0] == "-v")
+}
+
+func cmdVersion(info buildInfo) {
+	fmt.Print(versionString(info))
 }
 
 func parseVaultArg(args []string) ([]string, string, error) {

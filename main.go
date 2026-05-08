@@ -13,5 +13,6 @@ var (
 )
 
 func main() {
+	cli.SetBuildInfo(version, commit, buildTime)
 	os.Exit(cli.Run(os.Args[1:]))
 }

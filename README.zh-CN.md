@@ -137,6 +137,7 @@ secssh --vault <path-or-url> <command>
 secssh unlock
 secssh lock
 secssh status
+secssh version
 
 secssh ssh <target> -- [ssh args...]
 secssh scp <src> <dst> -- [scp args...]
@@ -175,6 +176,7 @@ secssh crypto set --kdf <name> --cipher <name>
 (secssh) /work/project > :status
 (secssh) /work/project > :host list
 (secssh) /work/project > :ssh prod
+(secssh) /work/project > :version
 ```
 
 可以通过 `--prefix` 或 `SECSSH_PREFIX` 修改环境命令前缀：

@@ -192,7 +192,8 @@ func runREPLTerminal(app *workspace.SessionManager, ref vaultRef, history *replH
 		if err != nil {
 			if errors.Is(err, io.EOF) {
 				if interrupted.Swap(false) {
-					_, _ = t.Write([]byte("\r\033[K^C\r\n"))
+					_, _ = os.Stdout.Write([]byte("^C\r\n"))
+					t = newTerminal()
 					continue
 				}
 				if eot.Swap(false) {
@@ -357,7 +358,7 @@ func completeLineWithPrefix(line string, pos int, commandPrefix string) (newLine
 		newPrefix := prefix[:start] + repl
 		result := newPrefix + line[pos:]
 		cursor := len(newPrefix)
-		if pos == len(line) {
+		if pos == len(line) && completionShouldAddSpace(repl) {
 			result += " "
 			cursor++
 		}
@@ -473,7 +474,7 @@ func completionCandidatesWithPrefix(path []string, current, commandPrefix string
 }
 
 func prefixedCommandCandidates(commandPrefix string) []string {
-	commands := []string{"unlock", "lock", "status", "ssh", "scp", "sftp", "history", "config", "key", "secret", "host", "passwd", "crypto", "help", "exit", "quit"}
+	commands := []string{"unlock", "lock", "status", "ssh", "scp", "sftp", "history", "config", "key", "secret", "host", "passwd", "crypto", "version", "help", "exit", "quit"}
 	out := make([]string, 0, len(commands))
 	for _, command := range commands {
 		out = append(out, commandPrefix+command)
@@ -486,6 +487,10 @@ func normalizeREPLPrefix(commandPrefix string) string {
 		return ":"
 	}
 	return commandPrefix
+}
+
+func completionShouldAddSpace(candidate string) bool {
+	return !strings.HasSuffix(candidate, "/") && !strings.HasSuffix(candidate, "\\")
 }
 
 func replPrompt() string {
@@ -677,13 +682,13 @@ func hostPathCandidates(prefix string) []string {
 		pattern := prefix + "*"
 		script := "$ErrorActionPreference='SilentlyContinue'; Get-ChildItem -Force -Name " + psSingleQuote(pattern)
 		if cands := runCompletionCommand("powershell.exe", []string{"-NoLogo", "-NoProfile", "-Command", script}); len(cands) > 0 {
-			return cands
+			return markDirectoryPathCandidates(cands)
 		}
 		return completeLocalPathFallback(prefix)
 	}
 	script := "compgen -f -- " + shellSingleQuote(prefix)
 	if cands := runCompletionCommand("bash", []string{"-lc", script}); len(cands) > 0 {
-		return cands
+		return markDirectoryPathCandidates(cands)
 	}
 	return completeLocalPathFallback(prefix)
 }
@@ -730,8 +735,46 @@ func completeLocalPathFallback(prefix string) []string {
 	if err != nil {
 		return nil
 	}
+	matches = markDirectoryPathCandidates(matches)
 	sort.Strings(matches)
 	return matches
+}
+
+func markDirectoryPathCandidates(cands []string) []string {
+	out := make([]string, 0, len(cands))
+	for _, cand := range cands {
+		if cand == "" {
+			continue
+		}
+		out = append(out, markDirectoryPathCandidate(cand))
+	}
+	sort.Strings(out)
+	return out
+}
+
+func markDirectoryPathCandidate(candidate string) string {
+	if strings.HasSuffix(candidate, "/") || strings.HasSuffix(candidate, "\\") {
+		return candidate
+	}
+	st, err := os.Stat(expandUserPathForStat(candidate))
+	if err != nil || !st.IsDir() {
+		return candidate
+	}
+	return filepath.ToSlash(candidate) + "/"
+}
+
+func expandUserPathForStat(path string) string {
+	if path != "~" && !strings.HasPrefix(path, "~/") && !strings.HasPrefix(path, `~\`) {
+		return path
+	}
+	home, err := os.UserHomeDir()
+	if err != nil || strings.TrimSpace(home) == "" {
+		return path
+	}
+	if path == "~" {
+		return home
+	}
+	return filepath.Join(home, path[2:])
 }
 
 func completePathExecutables(prefix string) []string {
@@ -833,6 +876,7 @@ func envUsage(commandPrefix string) {
 		"passwd",
 		"crypto show",
 		"crypto set --kdf argon2id --cipher aes-256-gcm",
+		"version",
 		"history [clear|limit <n>]",
 		"help",
 		"exit",

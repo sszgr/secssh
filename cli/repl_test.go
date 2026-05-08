@@ -88,6 +88,14 @@ func TestCompletionCandidatesHistory(t *testing.T) {
 	}
 }
 
+func TestCompletionCandidatesVersion(t *testing.T) {
+	got := completionCandidates(nil, ":v")
+	want := []string{":version"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("got=%v want=%v", got, want)
+	}
+}
+
 func TestCompletionCandidatesCustomPrefix(t *testing.T) {
 	got := completionCandidatesWithPrefix(nil, ".st", ".")
 	want := []string{".status"}
@@ -268,6 +276,67 @@ func TestHostPathCompletionFallback(t *testing.T) {
 	got := hostPathCandidates("tab-fi")
 	if !containsString(got, "tab-file.txt") {
 		t.Fatalf("expected file completion, got %v", got)
+	}
+}
+
+func TestHostPathCompletionMarksDirectories(t *testing.T) {
+	old, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("Getwd failed: %v", err)
+	}
+	dir := t.TempDir()
+	defer func() { _ = os.Chdir(old) }()
+	if err := os.Chdir(dir); err != nil {
+		t.Fatalf("chdir: %v", err)
+	}
+	if err := os.Mkdir("tab-dir", 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+
+	got := hostPathCandidates("tab-d")
+	if !containsString(got, "tab-dir/") {
+		t.Fatalf("expected directory completion with slash, got %v", got)
+	}
+}
+
+func TestMarkDirectoryPathCandidateExpandsHome(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	if err := os.Mkdir(filepath.Join(home, ".secssh"), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+
+	got := markDirectoryPathCandidate("~/.secssh")
+	if got != "~/.secssh/" {
+		t.Fatalf("got %q want %q", got, "~/.secssh/")
+	}
+}
+
+func TestCompleteLineDoesNotAddSpaceAfterDirectory(t *testing.T) {
+	old, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("Getwd failed: %v", err)
+	}
+	dir := t.TempDir()
+	defer func() { _ = os.Chdir(old) }()
+	if err := os.Chdir(dir); err != nil {
+		t.Fatalf("chdir: %v", err)
+	}
+	if err := os.Mkdir("tab-dir", 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+
+	line := "cd tab-d"
+	got, pos, _, ok := completeLine(line, len(line))
+	if !ok {
+		t.Fatalf("expected completion")
+	}
+	if got != "cd tab-dir/" {
+		t.Fatalf("got line=%q want %q", got, "cd tab-dir/")
+	}
+	if pos != len(got) {
+		t.Fatalf("got pos=%d want %d", pos, len(got))
 	}
 }
 
