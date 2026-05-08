@@ -29,13 +29,19 @@ type vaultRef struct {
 	ReadOnly bool
 }
 
+type cliOptions struct {
+	VaultSource string
+	REPLPrefix  string
+	ConfigPath  string
+}
+
 func Run(args []string) int {
-	args, sourceArg, err := parseVaultArg(args)
+	args, opts, err := parseGlobalArgs(args)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		return 2
 	}
-	source, err := vault.ResolveSource(sourceArg)
+	source, err := vault.ResolveSource(opts.VaultSource)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "resolve vault source failed: %v\n", err)
 		return 1
@@ -48,10 +54,10 @@ func Run(args []string) int {
 	workspace.CleanupRuntimeArtifacts()
 	app := workspace.NewSessionManager(ref.Source, 10*time.Minute)
 	if len(args) == 0 {
-		return runREPL(app, ref)
+		return runREPL(app, ref, opts.REPLPrefix)
 	}
 	if len(args) == 1 && (args[0] == "enter" || args[0] == "env") {
-		return runREPL(app, ref)
+		return runREPL(app, ref, opts.REPLPrefix)
 	}
 	return runCommand(args, app, ref)
 }
@@ -89,6 +95,8 @@ func newRootCommand(app *workspace.SessionManager, ref vaultRef) *cobra.Command 
 		Short: "Encrypted closed SSH workspace manager",
 	}
 	root.PersistentFlags().String("vault", "", "vault file path or remote http(s) URL")
+	root.PersistentFlags().String("config", "", "secssh user config file path")
+	root.PersistentFlags().String("prefix", ":", "environment shell secssh command prefix")
 
 	root.AddCommand(&cobra.Command{
 		Use:   "unlock",
@@ -1157,25 +1165,104 @@ func ensureWritable(ref vaultRef, action string) error {
 }
 
 func parseVaultArg(args []string) ([]string, string, error) {
+	clean, opts, err := parseGlobalArgs(args)
+	return clean, opts.VaultSource, err
+}
+
+func parseGlobalArgs(args []string) ([]string, cliOptions, error) {
 	clean := make([]string, 0, len(args))
-	var source string
+	opts := cliOptions{}
+	configExplicit := false
+	if path := strings.TrimSpace(os.Getenv("SECSSH_CONFIG")); path != "" {
+		opts.ConfigPath = path
+		configExplicit = true
+	}
+	envPrefix := strings.TrimSpace(os.Getenv("SECSSH_PREFIX"))
+	var cliPrefix string
 	for i := 0; i < len(args); i++ {
 		arg := args[i]
 		if arg == "--vault" {
 			if i+1 >= len(args) {
-				return nil, "", errors.New("--vault requires a value")
+				return nil, cliOptions{}, errors.New("--vault requires a value")
 			}
-			source = args[i+1]
+			opts.VaultSource = args[i+1]
 			i++
 			continue
 		}
 		if strings.HasPrefix(arg, "--vault=") {
-			source = strings.TrimPrefix(arg, "--vault=")
+			opts.VaultSource = strings.TrimPrefix(arg, "--vault=")
+			continue
+		}
+		if arg == "--config" {
+			if i+1 >= len(args) {
+				return nil, cliOptions{}, errors.New("--config requires a value")
+			}
+			opts.ConfigPath = args[i+1]
+			configExplicit = true
+			i++
+			continue
+		}
+		if strings.HasPrefix(arg, "--config=") {
+			opts.ConfigPath = strings.TrimPrefix(arg, "--config=")
+			configExplicit = true
+			continue
+		}
+		if arg == "--prefix" {
+			if i+1 >= len(args) {
+				return nil, cliOptions{}, errors.New("--prefix requires a value")
+			}
+			cliPrefix = args[i+1]
+			i++
+			continue
+		}
+		if strings.HasPrefix(arg, "--prefix=") {
+			cliPrefix = strings.TrimPrefix(arg, "--prefix=")
 			continue
 		}
 		clean = append(clean, arg)
 	}
-	return clean, source, nil
+
+	if strings.TrimSpace(opts.ConfigPath) == "" {
+		path, err := defaultAppConfigPath()
+		if err != nil {
+			return nil, cliOptions{}, err
+		}
+		opts.ConfigPath = path
+	} else {
+		opts.ConfigPath = strings.TrimSpace(opts.ConfigPath)
+	}
+	cfg, err := loadAppConfig(opts.ConfigPath, configExplicit)
+	if err != nil {
+		return nil, cliOptions{}, fmt.Errorf("load config failed: %w", err)
+	}
+
+	opts.REPLPrefix = ":"
+	if cfg.REPLPrefix != "" {
+		opts.REPLPrefix = cfg.REPLPrefix
+	}
+	if envPrefix != "" {
+		opts.REPLPrefix = envPrefix
+	}
+	if cliPrefix != "" {
+		opts.REPLPrefix = cliPrefix
+	}
+	if err := validateREPLPrefix(opts.REPLPrefix); err != nil {
+		return nil, cliOptions{}, err
+	}
+	return clean, opts, nil
+}
+
+func validateREPLPrefix(prefix string) error {
+	if prefix == "" {
+		return errors.New("--prefix requires a value")
+	}
+	if strings.TrimSpace(prefix) != prefix || strings.TrimSpace(prefix) == "" {
+		return errors.New("--prefix must be a single non-whitespace character")
+	}
+	if len([]rune(prefix)) != 1 {
+		return errors.New("--prefix must be a single non-whitespace character")
+	}
+	return nil
 }
 
 func promptNewPassword() ([]byte, error) {

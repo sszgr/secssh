@@ -2,6 +2,7 @@ package cli
 
 import (
 	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -34,6 +35,112 @@ func TestParseVaultArgEqualsForm(t *testing.T) {
 	}
 	if !reflect.DeepEqual(args, []string{"status"}) {
 		t.Fatalf("unexpected args: %v", args)
+	}
+}
+
+func TestParseGlobalArgsPrefix(t *testing.T) {
+	args, opts, err := parseGlobalArgs([]string{"--prefix", ".", "--vault=/tmp/vault.enc", "env"})
+	if err != nil {
+		t.Fatalf("parseGlobalArgs failed: %v", err)
+	}
+	if opts.VaultSource != "/tmp/vault.enc" {
+		t.Fatalf("unexpected vault source: %q", opts.VaultSource)
+	}
+	if opts.REPLPrefix != "." {
+		t.Fatalf("unexpected repl prefix: %q", opts.REPLPrefix)
+	}
+	if !reflect.DeepEqual(args, []string{"env"}) {
+		t.Fatalf("unexpected args: %v", args)
+	}
+}
+
+func TestParseGlobalArgsPrefixFromConfig(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config")
+	if err := os.WriteFile(path, []byte("prefix=.\n"), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	_, opts, err := parseGlobalArgs([]string{"--config", path, "env"})
+	if err != nil {
+		t.Fatalf("parseGlobalArgs failed: %v", err)
+	}
+	if opts.ConfigPath != path {
+		t.Fatalf("unexpected config path: %q", opts.ConfigPath)
+	}
+	if opts.REPLPrefix != "." {
+		t.Fatalf("unexpected repl prefix: %q", opts.REPLPrefix)
+	}
+}
+
+func TestParseGlobalArgsConfigFromEnv(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config")
+	if err := os.WriteFile(path, []byte("prefix=.\n"), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	t.Setenv("SECSSH_CONFIG", path)
+
+	_, opts, err := parseGlobalArgs([]string{"env"})
+	if err != nil {
+		t.Fatalf("parseGlobalArgs failed: %v", err)
+	}
+	if opts.ConfigPath != path {
+		t.Fatalf("unexpected config path: %q", opts.ConfigPath)
+	}
+	if opts.REPLPrefix != "." {
+		t.Fatalf("unexpected repl prefix: %q", opts.REPLPrefix)
+	}
+}
+
+func TestParseGlobalArgsExplicitMissingConfigFails(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "missing")
+	if _, _, err := parseGlobalArgs([]string{"--config", path, "env"}); err == nil {
+		t.Fatalf("expected missing explicit config to fail")
+	}
+}
+
+func TestParseGlobalArgsPrefixPrecedence(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config")
+	if err := os.WriteFile(path, []byte("prefix=,\n"), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	t.Setenv("SECSSH_PREFIX", ".")
+
+	_, opts, err := parseGlobalArgs([]string{"--config", path, "--prefix", ";", "env"})
+	if err != nil {
+		t.Fatalf("parseGlobalArgs failed: %v", err)
+	}
+	if opts.REPLPrefix != ";" {
+		t.Fatalf("unexpected repl prefix: %q", opts.REPLPrefix)
+	}
+}
+
+func TestParseGlobalArgsPrefixFromEnv(t *testing.T) {
+	t.Setenv("SECSSH_PREFIX", ".")
+	_, opts, err := parseGlobalArgs([]string{"env"})
+	if err != nil {
+		t.Fatalf("parseGlobalArgs failed: %v", err)
+	}
+	if opts.REPLPrefix != "." {
+		t.Fatalf("unexpected repl prefix: %q", opts.REPLPrefix)
+	}
+}
+
+func TestParseGlobalArgsRejectsInvalidPrefix(t *testing.T) {
+	if _, _, err := parseGlobalArgs([]string{"--prefix", "cmd"}); err == nil {
+		t.Fatalf("expected multi-character prefix to fail")
+	}
+	if _, _, err := parseGlobalArgs([]string{"--prefix", " "}); err == nil {
+		t.Fatalf("expected whitespace prefix to fail")
+	}
+}
+
+func TestParseAppConfig(t *testing.T) {
+	cfg, err := parseAppConfig("# secssh\nprefix=.\n")
+	if err != nil {
+		t.Fatalf("parseAppConfig failed: %v", err)
+	}
+	if cfg.REPLPrefix != "." {
+		t.Fatalf("unexpected prefix: %q", cfg.REPLPrefix)
 	}
 }
 

@@ -88,6 +88,21 @@ func TestCompletionCandidatesHistory(t *testing.T) {
 	}
 }
 
+func TestCompletionCandidatesCustomPrefix(t *testing.T) {
+	got := completionCandidatesWithPrefix(nil, ".st", ".")
+	want := []string{".status"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("got=%v want=%v", got, want)
+	}
+}
+
+func TestCompletionCandidatesBareInputWithCustomPrefix(t *testing.T) {
+	got := completionCandidatesWithPrefix(nil, ":st", ".")
+	if len(got) != 0 {
+		t.Fatalf("got=%v want no secssh completions", got)
+	}
+}
+
 func TestCompletionCandidatesHistorySubcommands(t *testing.T) {
 	got := completionCandidates([]string{":history"}, "")
 	want := []string{"clear", "limit"}
@@ -213,6 +228,9 @@ func TestHandleREPLLineExitBareAndPrefixed(t *testing.T) {
 	}
 	if !handleREPLLine(":exit", nil, vaultRef{}, nil, nil) {
 		t.Fatalf("expected :exit to quit")
+	}
+	if !handleREPLLineWithPrefix(".exit", nil, vaultRef{}, nil, nil, ".") {
+		t.Fatalf("expected .exit to quit")
 	}
 	if !handleREPLLine("quit", nil, vaultRef{}, nil, nil) {
 		t.Fatalf("expected bare quit to quit")

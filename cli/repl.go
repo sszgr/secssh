@@ -143,24 +143,25 @@ func (rw terminalRW) Read(p []byte) (int, error) {
 
 func (rw terminalRW) Write(p []byte) (int, error) { return os.Stdout.Write(p) }
 
-func runREPL(app *workspace.SessionManager, ref vaultRef) int {
-	fmt.Fprintln(os.Stdout, "secssh environment. press TAB for completion, use ':help' for commands, ':exit' to quit.")
+func runREPL(app *workspace.SessionManager, ref vaultRef, commandPrefix string) int {
+	commandPrefix = normalizeREPLPrefix(commandPrefix)
+	fmt.Fprintf(os.Stdout, "secssh environment. press TAB for completion, use '%shelp' for commands, '%sexit' to quit.\n", commandPrefix, commandPrefix)
 
 	history := newREPLHistory(100)
 	env := newREPLEnv()
 	if term.IsTerminal(int(os.Stdin.Fd())) && term.IsTerminal(int(os.Stdout.Fd())) {
-		return runREPLTerminal(app, ref, history, env)
+		return runREPLTerminal(app, ref, history, env, commandPrefix)
 	}
 	fmt.Fprintln(os.Stdout, "(non-terminal input detected, TAB completion disabled)")
-	return runREPLScanner(app, ref, history, env)
+	return runREPLScanner(app, ref, history, env, commandPrefix)
 }
 
-func runREPLTerminal(app *workspace.SessionManager, ref vaultRef, history *replHistory, env *replEnv) int {
+func runREPLTerminal(app *workspace.SessionManager, ref vaultRef, history *replHistory, env *replEnv, commandPrefix string) int {
 	fd := int(os.Stdin.Fd())
 	oldState, err := term.MakeRaw(fd)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "terminal raw mode failed: %v\n", err)
-		return runREPLScanner(app, ref, history, env)
+		return runREPLScanner(app, ref, history, env, commandPrefix)
 	}
 	defer func() {
 		_ = term.Restore(fd, oldState)
@@ -176,7 +177,7 @@ func runREPLTerminal(app *workspace.SessionManager, ref vaultRef, history *replH
 			if key != '\t' {
 				return line, pos, false
 			}
-			newLine, newPos, list, ok := completeLine(line, pos)
+			newLine, newPos, list, ok := completeLineWithPrefix(line, pos, commandPrefix)
 			if list != "" {
 				_, _ = tt.Write([]byte("\n" + list + "\n"))
 			}
@@ -212,7 +213,7 @@ func runREPLTerminal(app *workspace.SessionManager, ref vaultRef, history *replH
 			fmt.Fprintf(os.Stderr, "terminal restore failed: %v\n", err)
 			return 1
 		}
-		if handleREPLLine(line, app, ref, history, env) {
+		if handleREPLLineWithPrefix(line, app, ref, history, env, commandPrefix) {
 			return 0
 		}
 		if _, err := term.MakeRaw(fd); err != nil {
@@ -231,7 +232,7 @@ func syncTerminalSize(t *term.Terminal, fd int) {
 	_ = t.SetSize(width, height)
 }
 
-func runREPLScanner(app *workspace.SessionManager, ref vaultRef, history *replHistory, env *replEnv) int {
+func runREPLScanner(app *workspace.SessionManager, ref vaultRef, history *replHistory, env *replEnv, commandPrefix string) int {
 	s := bufio.NewScanner(os.Stdin)
 	for {
 		fmt.Fprint(os.Stdout, replPrompt())
@@ -243,13 +244,18 @@ func runREPLScanner(app *workspace.SessionManager, ref vaultRef, history *replHi
 		if history != nil {
 			history.Add(line)
 		}
-		if handleREPLLine(line, app, ref, history, env) {
+		if handleREPLLineWithPrefix(line, app, ref, history, env, commandPrefix) {
 			return 0
 		}
 	}
 }
 
 func handleREPLLine(raw string, app *workspace.SessionManager, ref vaultRef, history *replHistory, env *replEnv) bool {
+	return handleREPLLineWithPrefix(raw, app, ref, history, env, ":")
+}
+
+func handleREPLLineWithPrefix(raw string, app *workspace.SessionManager, ref vaultRef, history *replHistory, env *replEnv, commandPrefix string) bool {
+	commandPrefix = normalizeREPLPrefix(commandPrefix)
 	line := strings.TrimSpace(raw)
 	if line == "" {
 		return false
@@ -257,8 +263,8 @@ func handleREPLLine(raw string, app *workspace.SessionManager, ref vaultRef, his
 	if line == "exit" || line == "quit" {
 		return true
 	}
-	if strings.HasPrefix(line, ":") {
-		return handleEnvBuiltin(strings.TrimSpace(strings.TrimPrefix(line, ":")), app, ref, history)
+	if strings.HasPrefix(line, commandPrefix) {
+		return handleEnvBuiltin(strings.TrimSpace(strings.TrimPrefix(line, commandPrefix)), app, ref, history, commandPrefix)
 	}
 
 	if cdArgs, ok, err := parsePersistentCdLine(line); ok {
@@ -279,7 +285,7 @@ func handleREPLLine(raw string, app *workspace.SessionManager, ref vaultRef, his
 	return false
 }
 
-func handleEnvBuiltin(line string, app *workspace.SessionManager, ref vaultRef, history *replHistory) bool {
+func handleEnvBuiltin(line string, app *workspace.SessionManager, ref vaultRef, history *replHistory, commandPrefix string) bool {
 	if line == "" {
 		fmt.Fprintln(os.Stderr, "empty secssh command")
 		return false
@@ -299,7 +305,7 @@ func handleEnvBuiltin(line string, app *workspace.SessionManager, ref vaultRef, 
 		if handleREPLHelp(args[1:]) {
 			return false
 		}
-		envUsage()
+		envUsage(commandPrefix)
 		return false
 	case "history":
 		if wantsBuiltinHelp(args[1:]) {
@@ -315,6 +321,11 @@ func handleEnvBuiltin(line string, app *workspace.SessionManager, ref vaultRef, 
 }
 
 func completeLine(line string, pos int) (newLine string, newPos int, list string, ok bool) {
+	return completeLineWithPrefix(line, pos, ":")
+}
+
+func completeLineWithPrefix(line string, pos int, commandPrefix string) (newLine string, newPos int, list string, ok bool) {
+	commandPrefix = normalizeREPLPrefix(commandPrefix)
 	if pos < 0 || pos > len(line) {
 		return line, pos, "", false
 	}
@@ -334,8 +345,8 @@ func completeLine(line string, pos int) (newLine string, newPos int, list string
 	if !atNewToken && len(path) > 0 {
 		path = path[:len(path)-1]
 	}
-	cands := completionCandidates(path, current)
-	if len(cands) == 0 && !strings.HasPrefix(prefix, ":") {
+	cands := completionCandidatesWithPrefix(path, current, commandPrefix)
+	if len(cands) == 0 && !strings.HasPrefix(prefix, commandPrefix) {
 		cands = hostCompletionCandidates(line, pos, path, current)
 	}
 	if len(cands) == 0 {
@@ -361,16 +372,21 @@ func completeLine(line string, pos int) (newLine string, newPos int, list string
 }
 
 func completionCandidates(path []string, current string) []string {
+	return completionCandidatesWithPrefix(path, current, ":")
+}
+
+func completionCandidatesWithPrefix(path []string, current, commandPrefix string) []string {
+	commandPrefix = normalizeREPLPrefix(commandPrefix)
 	base := []string{}
-	if len(path) == 0 && !strings.HasPrefix(current, ":") {
+	if len(path) == 0 && !strings.HasPrefix(current, commandPrefix) {
 		return nil
 	}
 	normalize := func(s string) string {
-		return strings.TrimPrefix(s, ":")
+		return strings.TrimPrefix(s, commandPrefix)
 	}
 	switch len(path) {
 	case 0:
-		base = []string{":unlock", ":lock", ":status", ":ssh", ":scp", ":sftp", ":history", ":config", ":key", ":secret", ":host", ":passwd", ":crypto", ":help", ":exit", ":quit"}
+		base = prefixedCommandCandidates(commandPrefix)
 	case 1:
 		switch normalize(path[0]) {
 		case "config":
@@ -454,6 +470,22 @@ func completionCandidates(path []string, current string) []string {
 	}
 	sort.Strings(out)
 	return out
+}
+
+func prefixedCommandCandidates(commandPrefix string) []string {
+	commands := []string{"unlock", "lock", "status", "ssh", "scp", "sftp", "history", "config", "key", "secret", "host", "passwd", "crypto", "help", "exit", "quit"}
+	out := make([]string, 0, len(commands))
+	for _, command := range commands {
+		out = append(out, commandPrefix+command)
+	}
+	return out
+}
+
+func normalizeREPLPrefix(commandPrefix string) string {
+	if commandPrefix == "" {
+		return ":"
+	}
+	return commandPrefix
 }
 
 func replPrompt() string {
@@ -774,36 +806,41 @@ func printHistoryUsage() {
 	}
 }
 
-func envUsage() {
-	fmt.Println(`secssh environment command list:
-  :unlock
-  :lock
-  :status
-  :ssh <target> -- [ssh args...]
-  :scp <src> <dst> -- [scp args...]
-  :sftp <target> -- [sftp args...]
-  :config set --file <path>
-  :config show
-  :key add <name> --file <private_key>
-  :key gen <name> [--type ed25519|rsa] [--bits 4096] [--comment <text>]
-  :key copy <name> <host-alias> [--auth ... --prompt --use-secret ...]
-  :key list
-  :key rm <name>
-  :secret add <name>
-  :secret rm <name>
-  :secret list
-  :host add <alias> --hostname <host> [--port 22] [--user <user>] [--key <key-name>] [--password|--password-value <value>]
-  :host rm <alias>
-  :host list
-  :host auth set <alias> ...
-  :passwd
-  :crypto show
-  :crypto set --kdf argon2id --cipher aes-256-gcm
-  :history [clear|limit <n>]
-  :help
-  :exit
-
-Bare commands run in the host shell. Bare cd [path] changes the secssh environment directory.`)
+func envUsage(commandPrefix string) {
+	commandPrefix = normalizeREPLPrefix(commandPrefix)
+	fmt.Fprintln(os.Stdout, "secssh environment command list:")
+	for _, line := range []string{
+		"unlock",
+		"lock",
+		"status",
+		"ssh <target> -- [ssh args...]",
+		"scp <src> <dst> -- [scp args...]",
+		"sftp <target> -- [sftp args...]",
+		"config set --file <path>",
+		"config show",
+		"key add <name> --file <private_key>",
+		"key gen <name> [--type ed25519|rsa] [--bits 4096] [--comment <text>]",
+		"key copy <name> <host-alias> [--auth ... --prompt --use-secret ...]",
+		"key list",
+		"key rm <name>",
+		"secret add <name>",
+		"secret rm <name>",
+		"secret list",
+		"host add <alias> --hostname <host> [--port 22] [--user <user>] [--key <key-name>] [--password|--password-value <value>]",
+		"host rm <alias>",
+		"host list",
+		"host auth set <alias> ...",
+		"passwd",
+		"crypto show",
+		"crypto set --kdf argon2id --cipher aes-256-gcm",
+		"history [clear|limit <n>]",
+		"help",
+		"exit",
+	} {
+		fmt.Fprintf(os.Stdout, "  %s%s\n", commandPrefix, line)
+	}
+	fmt.Fprintln(os.Stdout)
+	fmt.Fprintln(os.Stdout, "Bare commands run in the host shell. Bare cd [path] changes the secssh environment directory.")
 }
 
 func wantsBuiltinHelp(args []string) bool {

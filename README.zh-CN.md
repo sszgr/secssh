@@ -169,13 +169,30 @@ secssh crypto set --kdf <name> --cipher <name>
 
 ## 环境 Shell
 
-不带参数运行 `secssh` 会进入环境 Shell。在这个 Shell 中，secssh 内置命令使用 `:` 前缀：
+不带参数运行 `secssh` 会进入环境 Shell。在这个 Shell 中，secssh 内置命令默认使用 `:` 前缀：
 
 ```text
 (secssh) /work/project > :status
 (secssh) /work/project > :host list
 (secssh) /work/project > :ssh prod
 ```
+
+可以通过 `--prefix` 或 `SECSSH_PREFIX` 修改环境命令前缀：
+
+```bash
+secssh --prefix .
+SECSSH_PREFIX=. secssh
+```
+
+之后命令会使用你选择的前缀，例如 `.status` 和 `.ssh prod`。
+
+如果想持久配置，可以创建 `~/.secssh/config`：
+
+```text
+prefix=.
+```
+
+配置优先级为 `--prefix`、`SECSSH_PREFIX`、`~/.secssh/config`、默认 `:`。
 
 裸命令会交给主机 shell 执行：
 

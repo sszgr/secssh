@@ -10,6 +10,8 @@ BUILD_TIME ?= $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
 GOOS ?= $(shell go env GOOS)
 GOARCH ?= $(shell go env GOARCH)
 PLATFORM ?=
+PREFIX ?=
+CONFIG ?=
 LDFLAGS ?= -s -w -X 'main.version=$(VERSION)' -X 'main.commit=$(COMMIT)' -X 'main.buildTime=$(BUILD_TIME)'
 
 .PHONY: help fmt test vet build build-one build-cross release run tidy clean
@@ -23,7 +25,7 @@ help:
 	@echo "  make build-one   - build one platform (PLATFORM=os/arch or GOOS/GOARCH)"
 	@echo "  make build-cross - cross-compile for PLATFORMS to ./$(DIST_DIR)"
 	@echo "  make release     - clean + build-cross"
-	@echo "  make run         - run secssh (interactive mode)"
+	@echo "  make run         - run secssh (interactive mode, optional PREFIX=. CONFIG=path)"
 	@echo "  make tidy        - tidy go modules"
 	@echo "  make clean       - remove build artifacts"
 	@echo ""
@@ -79,7 +81,7 @@ build-cross:
 release: clean build-cross
 
 run:
-	@$(GO) run .
+	@$(GO) run . $(if $(CONFIG),--config "$(CONFIG)",) $(if $(PREFIX),--prefix "$(PREFIX)",)
 
 tidy:
 	@$(GO) mod tidy

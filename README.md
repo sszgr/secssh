@@ -169,13 +169,30 @@ secssh crypto set --kdf <name> --cipher <name>
 
 ## Environment Shell
 
-Run `secssh` without arguments to enter the environment shell. Inside this shell, secssh commands use a `:` prefix:
+Run `secssh` without arguments to enter the environment shell. Inside this shell, secssh commands use a `:` prefix by default:
 
 ```text
 (secssh) /work/project > :status
 (secssh) /work/project > :host list
 (secssh) /work/project > :ssh prod
 ```
+
+You can change the environment command prefix with `--prefix` or `SECSSH_PREFIX`:
+
+```bash
+secssh --prefix .
+SECSSH_PREFIX=. secssh
+```
+
+Then commands use the selected prefix, for example `.status` and `.ssh prod`.
+
+For a persistent setting, create `~/.secssh/config`:
+
+```text
+prefix=.
+```
+
+Configuration precedence is `--prefix`, then `SECSSH_PREFIX`, then `~/.secssh/config`, then the default `:`.
 
 Bare commands are executed by the host shell:
 
