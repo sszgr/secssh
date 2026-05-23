@@ -140,7 +140,7 @@ secssh status
 secssh version
 
 secssh ssh <target> -- [ssh args...]
-secssh scp <src> <dst> -- [scp args...]
+secssh scp [-r] <src> <dst> -- [scp args...]
 secssh sftp <target> -- [sftp args...]
 
 secssh config set --file <path>

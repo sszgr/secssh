@@ -73,6 +73,13 @@ func TestCompletionCandidatesHostAddFlags(t *testing.T) {
 	}
 }
 
+func TestCompletionCandidatesSCPRecursiveFlag(t *testing.T) {
+	got := completionCandidates([]string{":scp"}, "-")
+	if !containsString(got, "-r") {
+		t.Fatalf("expected -r in completions, got %v", got)
+	}
+}
+
 func TestCompletionCandidatesBareInputDoesNotCompleteSecsshCommands(t *testing.T) {
 	got := completionCandidates(nil, "p")
 	if len(got) != 0 {
@@ -276,6 +283,29 @@ func TestHostPathCompletionFallback(t *testing.T) {
 	got := hostPathCandidates("tab-fi")
 	if !containsString(got, "tab-file.txt") {
 		t.Fatalf("expected file completion, got %v", got)
+	}
+}
+
+func TestTransportCompletionCompletesLocalPaths(t *testing.T) {
+	old, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("Getwd failed: %v", err)
+	}
+	dir := t.TempDir()
+	defer func() { _ = os.Chdir(old) }()
+	if err := os.Chdir(dir); err != nil {
+		t.Fatalf("chdir: %v", err)
+	}
+	if err := os.WriteFile("deploy.tar", []byte("x"), 0o600); err != nil {
+		t.Fatalf("write file: %v", err)
+	}
+
+	got, _, _, ok := completeLine(":ssh dep", len(":ssh dep"))
+	if !ok {
+		t.Fatalf("expected completion")
+	}
+	if got != ":ssh deploy.tar " {
+		t.Fatalf("got line=%q want %q", got, ":ssh deploy.tar ")
 	}
 }
 

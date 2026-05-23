@@ -215,6 +215,22 @@ func TestParseTransportArgsInterspersedFlags(t *testing.T) {
 	}
 }
 
+func TestParseSCPTransportArgsRecursiveFlag(t *testing.T) {
+	parsed, err := parseSCPTransportArgs([]string{"-r", "local-dir", "prod:/tmp/dst", "--auth", "password"})
+	if err != nil {
+		t.Fatalf("parseSCPTransportArgs failed: %v", err)
+	}
+	if !reflect.DeepEqual(parsed.Targets, []string{"local-dir", "prod:/tmp/dst"}) {
+		t.Fatalf("unexpected targets: %v", parsed.Targets)
+	}
+	if !reflect.DeepEqual(parsed.PassArgs, []string{"-r"}) {
+		t.Fatalf("unexpected pass args: %v", parsed.PassArgs)
+	}
+	if parsed.AuthMode != "password" {
+		t.Fatalf("unexpected auth mode: %q", parsed.AuthMode)
+	}
+}
+
 func TestResolveSCPRemoteTarget(t *testing.T) {
 	target, err := resolveSCPRemoteTarget("local.txt", "root@prod:/tmp/remote.txt")
 	if err != nil {

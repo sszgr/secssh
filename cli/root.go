@@ -137,7 +137,7 @@ func newRootCommand(app *workspace.SessionManager, ref vaultRef) *cobra.Command 
 	root.AddCommand(sshCmd)
 
 	scpCmd := &cobra.Command{
-		Use:                "scp <src> <dst> [-- [scp args...]]",
+		Use:                "scp [-r] <src> <dst> [-- [scp args...]]",
 		Short:              "Run scp through secssh workspace",
 		DisableFlagParsing: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -383,7 +383,7 @@ func usage() {
   secssh lock
   secssh status
   secssh ssh <target> -- [ssh args...]
-  secssh scp <src> <dst> -- [scp args...]
+  secssh scp [-r] <src> <dst> -- [scp args...]
   secssh sftp <target> -- [sftp args...]
   secssh config set --file <path>
   secssh config show
@@ -543,9 +543,9 @@ func cmdSFTP(args []string, mgr *workspace.SessionManager, ref vaultRef) int {
 }
 
 func cmdSCP(args []string, mgr *workspace.SessionManager, ref vaultRef) int {
-	parsed, err := parseTransportArgs(args, 2)
+	parsed, err := parseSCPTransportArgs(args)
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "usage: secssh scp <src> <dst> [--auth ... --prompt --use-secret ...] -- [scp args...]")
+		fmt.Fprintln(os.Stderr, "usage: secssh scp [-r] <src> <dst> [--auth ... --prompt --use-secret ...] -- [scp args...]")
 		return 2
 	}
 	target, err := resolveSCPRemoteTarget(parsed.Targets[0], parsed.Targets[1])
@@ -556,6 +556,44 @@ func cmdSCP(args []string, mgr *workspace.SessionManager, ref vaultRef) int {
 	return runRemoteCommand("scp", mgr, ref, parsed, func(opts runner.Options) error {
 		return runner.RunSCP(opts, parsed.Targets[1], parsed.Targets[2])
 	})
+}
+
+func parseSCPTransportArgs(args []string) (*transportArgs, error) {
+	runnerArgs, passArgs := splitTransportArgs(args)
+	parsed := &transportArgs{}
+	for i := 0; i < len(runnerArgs); i++ {
+		arg := runnerArgs[i]
+		switch arg {
+		case "--auth":
+			if i+1 >= len(runnerArgs) {
+				return nil, errors.New("--auth requires a value")
+			}
+			parsed.AuthMode = runnerArgs[i+1]
+			i++
+		case "--prompt":
+			parsed.Prompt = true
+		case "--use-secret":
+			if i+1 >= len(runnerArgs) {
+				return nil, errors.New("--use-secret requires a value")
+			}
+			parsed.UseSecret = runnerArgs[i+1]
+			i++
+		case "-r":
+			parsed.PassArgs = append(parsed.PassArgs, arg)
+		default:
+			parsed.Targets = append(parsed.Targets, arg)
+		}
+	}
+	if len(parsed.Targets) != 2 {
+		return nil, errors.New("expected 2 target arguments")
+	}
+	parsed.PassArgs = append(parsed.PassArgs, passArgs...)
+	if parsed.AuthMode != "" {
+		if _, err := host.ParseAuthMode(parsed.AuthMode); err != nil {
+			return nil, err
+		}
+	}
+	return parsed, nil
 }
 
 func cmdConfig(args []string, ref vaultRef) int {

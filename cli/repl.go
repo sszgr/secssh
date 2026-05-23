@@ -403,7 +403,7 @@ func completionCandidatesWithPrefix(path []string, current, commandPrefix string
 		case "ssh":
 			base = []string{"--auth", "--prompt", "--use-secret", "--"}
 		case "scp":
-			base = []string{"--auth", "--prompt", "--use-secret", "--"}
+			base = []string{"-r", "--auth", "--prompt", "--use-secret", "--"}
 		case "sftp":
 			base = []string{"--auth", "--prompt", "--use-secret", "--"}
 		case "history":
@@ -442,6 +442,10 @@ func completionCandidatesWithPrefix(path []string, current, commandPrefix string
 			}
 		case "ssh":
 			base = []string{"--auth", "--prompt", "--use-secret", "--"}
+		case "scp":
+			base = []string{"-r", "--auth", "--prompt", "--use-secret", "--"}
+		case "sftp":
+			base = []string{"--auth", "--prompt", "--use-secret", "--"}
 		}
 	default:
 		root := normalize(path[0])
@@ -457,6 +461,16 @@ func completionCandidatesWithPrefix(path []string, current, commandPrefix string
 		if len(path) >= 2 && root == "ssh" {
 			base = []string{"--auth", "--prompt", "--use-secret", "--"}
 		}
+		if len(path) >= 2 && root == "scp" {
+			base = []string{"-r", "--auth", "--prompt", "--use-secret", "--"}
+		}
+		if len(path) >= 2 && root == "sftp" {
+			base = []string{"--auth", "--prompt", "--use-secret", "--"}
+		}
+	}
+
+	if isTransportCompletionPath(path, commandPrefix, current) {
+		return hostPathCandidates(current)
 	}
 
 	if current == "" {
@@ -471,6 +485,32 @@ func completionCandidatesWithPrefix(path []string, current, commandPrefix string
 	}
 	sort.Strings(out)
 	return out
+}
+
+func isTransportCompletionPath(path []string, commandPrefix, current string) bool {
+	if len(path) == 0 || current == "" || strings.HasPrefix(current, "-") {
+		return false
+	}
+	root := strings.TrimPrefix(path[0], commandPrefix)
+	if root != "ssh" && root != "scp" && root != "sftp" {
+		return false
+	}
+	if isKnownTransportFlagValue(path) {
+		return false
+	}
+	return true
+}
+
+func isKnownTransportFlagValue(path []string) bool {
+	if len(path) == 0 {
+		return false
+	}
+	switch path[len(path)-1] {
+	case "--auth", "--use-secret":
+		return true
+	default:
+		return false
+	}
 }
 
 func prefixedCommandCandidates(commandPrefix string) []string {
@@ -857,7 +897,7 @@ func envUsage(commandPrefix string) {
 		"lock",
 		"status",
 		"ssh <target> -- [ssh args...]",
-		"scp <src> <dst> -- [scp args...]",
+		"scp [-r] <src> <dst> -- [scp args...]",
 		"sftp <target> -- [sftp args...]",
 		"config set --file <path>",
 		"config show",
