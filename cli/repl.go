@@ -470,7 +470,13 @@ func completionCandidatesWithPrefix(path []string, current, commandPrefix string
 	}
 
 	if isTransportCompletionPath(path, commandPrefix, current) {
-		return hostPathCandidates(current)
+		paths := hostPathCandidates(current)
+		if current == "" {
+			base = append(base, paths...)
+			base = uniqueSortedStrings(base)
+			return base
+		}
+		return paths
 	}
 
 	if current == "" {
@@ -488,7 +494,7 @@ func completionCandidatesWithPrefix(path []string, current, commandPrefix string
 }
 
 func isTransportCompletionPath(path []string, commandPrefix, current string) bool {
-	if len(path) == 0 || current == "" || strings.HasPrefix(current, "-") {
+	if len(path) == 0 || strings.HasPrefix(current, "-") {
 		return false
 	}
 	root := strings.TrimPrefix(path[0], commandPrefix)
@@ -499,6 +505,23 @@ func isTransportCompletionPath(path []string, commandPrefix, current string) boo
 		return false
 	}
 	return true
+}
+
+func uniqueSortedStrings(values []string) []string {
+	seen := make(map[string]struct{}, len(values))
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		if value == "" {
+			continue
+		}
+		if _, ok := seen[value]; ok {
+			continue
+		}
+		seen[value] = struct{}{}
+		out = append(out, value)
+	}
+	sort.Strings(out)
+	return out
 }
 
 func isKnownTransportFlagValue(path []string) bool {

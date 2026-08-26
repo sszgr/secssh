@@ -309,6 +309,29 @@ func TestTransportCompletionCompletesLocalPaths(t *testing.T) {
 	}
 }
 
+func TestSCPCompletionListsLocalPathsForEmptyArgument(t *testing.T) {
+	old, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("Getwd failed: %v", err)
+	}
+	dir := t.TempDir()
+	defer func() { _ = os.Chdir(old) }()
+	if err := os.Chdir(dir); err != nil {
+		t.Fatalf("chdir: %v", err)
+	}
+	if err := os.WriteFile("deploy.tar", []byte("x"), 0o600); err != nil {
+		t.Fatalf("write file: %v", err)
+	}
+
+	got := completionCandidates([]string{":scp"}, "")
+	if !containsString(got, "deploy.tar") {
+		t.Fatalf("expected local path in completions, got %v", got)
+	}
+	if !containsString(got, "-r") {
+		t.Fatalf("expected scp option in completions, got %v", got)
+	}
+}
+
 func TestHostPathCompletionMarksDirectories(t *testing.T) {
 	old, err := os.Getwd()
 	if err != nil {
