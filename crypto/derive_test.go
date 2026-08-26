@@ -46,3 +46,24 @@ func TestDeriveKeyErrors(t *testing.T) {
 		t.Fatalf("expected error for unsupported kdf")
 	}
 }
+
+func TestDeriveKeyRejectsExcessiveWorkFactors(t *testing.T) {
+	argon := KDFParams{
+		Salt:        []byte("1234567890abcdef"),
+		Memory:      MaxArgon2MemoryKiB + 1,
+		Iterations:  1,
+		Parallelism: 1,
+		KeyLen:      32,
+	}
+	if _, err := DeriveKey([]byte("pw"), "argon2id", argon); err == nil {
+		t.Fatal("expected excessive argon2 memory to be rejected")
+	}
+	pbkdf2Params := KDFParams{
+		Salt:       []byte("1234567890abcdef"),
+		Iterations: MaxPBKDF2Iterations + 1,
+		KeyLen:     32,
+	}
+	if _, err := DeriveKey([]byte("pw"), "pbkdf2-sha256", pbkdf2Params); err == nil {
+		t.Fatal("expected excessive pbkdf2 iterations to be rejected")
+	}
+}

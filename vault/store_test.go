@@ -1,8 +1,11 @@
 package vault
 
 import (
+	"encoding/binary"
 	"path/filepath"
 	"testing"
+
+	"github.com/sszgr/secssh/crypto"
 )
 
 func TestVaultLifecycle(t *testing.T) {
@@ -36,6 +39,32 @@ func TestVaultLifecycle(t *testing.T) {
 	}
 	if p2.SSHConfig == "" || string(p2.Keys["prod"]) != "PRIVATE_KEY" || p2.Secrets["pwd-prod"] != "s3cr3t" {
 		t.Fatalf("payload mismatch after roundtrip")
+	}
+}
+
+func TestParseFileRejectsUnsafeHeaderBeforeKeyDerivation(t *testing.T) {
+	header := FileHeader{
+		Version:    FileVersion,
+		KDFType:    "argon2id",
+		KDFParams:  crypto.KDFParams{Salt: []byte("1234567890abcdef"), Memory: crypto.MaxArgon2MemoryKiB + 1, Iterations: 1, Parallelism: 1, KeyLen: 32},
+		CipherType: "aes-256-gcm",
+		Nonce:      make([]byte, 12),
+	}
+	raw, err := packFile(&header, []byte("ciphertext"))
+	if err != nil {
+		t.Fatalf("packFile failed: %v", err)
+	}
+	if _, _, err := parseFile(raw); err == nil {
+		t.Fatal("expected unsafe KDF parameters to be rejected")
+	}
+}
+
+func TestParseFileRejectsOversizedHeader(t *testing.T) {
+	raw := make([]byte, len(FileMagic)+4+1)
+	copy(raw, FileMagic)
+	binary.BigEndian.PutUint32(raw[len(FileMagic):], maxFileHeaderSize+1)
+	if _, _, err := parseFile(raw); err == nil {
+		t.Fatal("expected oversized header to be rejected")
 	}
 }
 

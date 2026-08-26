@@ -3,9 +3,19 @@ package crypto
 import (
 	"crypto/sha256"
 	"errors"
+	"fmt"
 
 	"golang.org/x/crypto/argon2"
 	"golang.org/x/crypto/pbkdf2"
+)
+
+const (
+	MaxKDFSaltLength     = 64
+	MaxKDFKeyLength      = 64
+	MaxArgon2MemoryKiB   = 512 * 1024
+	MaxArgon2Iterations  = 20
+	MaxArgon2Parallelism = 32
+	MaxPBKDF2Iterations  = 10_000_000
 )
 
 type KDFParams struct {
@@ -28,26 +38,51 @@ func DefaultKDFParams(kdf string) (KDFParams, error) {
 }
 
 func DeriveKey(password []byte, kdf string, p KDFParams) ([]byte, error) {
-	if len(p.Salt) == 0 {
-		return nil, errors.New("kdf salt is required")
-	}
 	if p.KeyLen == 0 {
 		p.KeyLen = 32
 	}
+	if err := ValidateKDFParams(kdf, p); err != nil {
+		return nil, err
+	}
 	switch kdf {
 	case "argon2id":
-		if p.Memory == 0 || p.Iterations == 0 || p.Parallelism == 0 {
-			return nil, errors.New("invalid argon2id params")
-		}
 		key := argon2.IDKey(password, p.Salt, p.Iterations, p.Memory, p.Parallelism, p.KeyLen)
 		return key, nil
 	case "pbkdf2-sha256":
-		if p.Iterations == 0 {
-			return nil, errors.New("invalid pbkdf2 iterations")
-		}
 		key := pbkdf2.Key(password, p.Salt, int(p.Iterations), int(p.KeyLen), sha256.New)
 		return key, nil
 	default:
 		return nil, errors.New("unsupported kdf")
 	}
+}
+
+func ValidateKDFParams(kdf string, p KDFParams) error {
+	if len(p.Salt) == 0 {
+		return errors.New("kdf salt is required")
+	}
+	if len(p.Salt) > MaxKDFSaltLength {
+		return fmt.Errorf("kdf salt exceeds %d bytes", MaxKDFSaltLength)
+	}
+	if p.KeyLen == 0 || p.KeyLen > MaxKDFKeyLength {
+		return fmt.Errorf("kdf key length must be between 1 and %d bytes", MaxKDFKeyLength)
+	}
+	switch kdf {
+	case "argon2id":
+		if p.Memory == 0 || p.Memory > MaxArgon2MemoryKiB {
+			return fmt.Errorf("argon2id memory must be between 1 and %d KiB", MaxArgon2MemoryKiB)
+		}
+		if p.Iterations == 0 || p.Iterations > MaxArgon2Iterations {
+			return fmt.Errorf("argon2id iterations must be between 1 and %d", MaxArgon2Iterations)
+		}
+		if p.Parallelism == 0 || p.Parallelism > MaxArgon2Parallelism {
+			return fmt.Errorf("argon2id parallelism must be between 1 and %d", MaxArgon2Parallelism)
+		}
+	case "pbkdf2-sha256":
+		if p.Iterations == 0 || p.Iterations > MaxPBKDF2Iterations {
+			return fmt.Errorf("pbkdf2 iterations must be between 1 and %d", MaxPBKDF2Iterations)
+		}
+	default:
+		return errors.New("unsupported kdf")
+	}
+	return nil
 }

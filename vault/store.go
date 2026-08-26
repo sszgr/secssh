@@ -19,6 +19,8 @@ type SaveOptions struct {
 	KDFParams  *crypto.KDFParams
 }
 
+const maxFileHeaderSize = 64 * 1024
+
 func Exists(path string) bool {
 	_, err := os.Stat(path)
 	return err == nil
@@ -212,11 +214,15 @@ func parseFile(raw []byte) (*FileHeader, []byte, error) {
 		return nil, nil, errors.New("invalid vault magic")
 	}
 	hlen := binary.BigEndian.Uint32(raw[len(FileMagic) : len(FileMagic)+4])
-	if int(hlen) <= 0 || len(raw) < len(FileMagic)+4+int(hlen) {
+	if hlen == 0 || hlen > maxFileHeaderSize {
 		return nil, nil, errors.New("invalid header length")
 	}
-	hraw := raw[len(FileMagic)+4 : len(FileMagic)+4+int(hlen)]
-	ciphertext := raw[len(FileMagic)+4+int(hlen):]
+	headerEnd := len(FileMagic) + 4 + int(hlen)
+	if len(raw) < headerEnd {
+		return nil, nil, errors.New("invalid header length")
+	}
+	hraw := raw[len(FileMagic)+4 : headerEnd]
+	ciphertext := raw[headerEnd:]
 	if len(ciphertext) == 0 {
 		return nil, nil, errors.New("empty ciphertext")
 	}
@@ -228,7 +234,33 @@ func parseFile(raw []byte) (*FileHeader, []byte, error) {
 	if header.Version != FileVersion {
 		return nil, nil, fmt.Errorf("unsupported vault version: %d", header.Version)
 	}
+	if err := validateFileHeader(header); err != nil {
+		return nil, nil, err
+	}
 	return header, ciphertext, nil
+}
+
+func validateFileHeader(header *FileHeader) error {
+	if !crypto.IsSupportedKDF(header.KDFType) {
+		return errors.New("unsupported kdf")
+	}
+	if !crypto.IsSupportedCipher(header.CipherType) {
+		return errors.New("unsupported cipher")
+	}
+	if header.KDFParams.KeyLen != 32 {
+		return errors.New("vault cipher requires a 32-byte derived key")
+	}
+	if err := crypto.ValidateKDFParams(header.KDFType, header.KDFParams); err != nil {
+		return fmt.Errorf("invalid kdf params: %w", err)
+	}
+	nonceSize, err := crypto.NonceSize(header.CipherType)
+	if err != nil {
+		return err
+	}
+	if len(header.Nonce) != nonceSize {
+		return errors.New("invalid nonce length")
+	}
+	return nil
 }
 
 func packFile(header *FileHeader, ciphertext []byte) ([]byte, error) {
