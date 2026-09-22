@@ -309,6 +309,126 @@ func TestTransportCompletionCompletesLocalPaths(t *testing.T) {
 	}
 }
 
+func TestTransportCompletionCompletesQuotedLocalPath(t *testing.T) {
+	old, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("Getwd failed: %v", err)
+	}
+	dir := t.TempDir()
+	defer func() { _ = os.Chdir(old) }()
+	if err := os.Chdir(dir); err != nil {
+		t.Fatalf("chdir: %v", err)
+	}
+	if err := os.WriteFile("my file.txt", []byte("x"), 0o600); err != nil {
+		t.Fatalf("write file: %v", err)
+	}
+
+	line := `:scp "my fi`
+	got, pos, _, ok := completeLine(line, len(line))
+	if !ok {
+		t.Fatal("expected completion")
+	}
+	want := `:scp "my file.txt" `
+	if got != want || pos != len(want) {
+		t.Fatalf("got line=%q pos=%d want line=%q pos=%d", got, pos, want, len(want))
+	}
+}
+
+func TestTransportCompletionCompletesEscapedLocalPath(t *testing.T) {
+	old, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("Getwd failed: %v", err)
+	}
+	dir := t.TempDir()
+	defer func() { _ = os.Chdir(old) }()
+	if err := os.Chdir(dir); err != nil {
+		t.Fatalf("chdir: %v", err)
+	}
+	if err := os.WriteFile("my file.txt", []byte("x"), 0o600); err != nil {
+		t.Fatalf("write file: %v", err)
+	}
+
+	line := `:scp my\ fi`
+	got, _, _, ok := completeLine(line, len(line))
+	if !ok {
+		t.Fatal("expected completion")
+	}
+	if want := `:scp "my file.txt" `; got != want {
+		t.Fatalf("got line=%q want %q", got, want)
+	}
+}
+
+func TestTransportCompletionContinuesInsideQuotedDirectory(t *testing.T) {
+	old, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("Getwd failed: %v", err)
+	}
+	dir := t.TempDir()
+	defer func() { _ = os.Chdir(old) }()
+	if err := os.Chdir(dir); err != nil {
+		t.Fatalf("chdir: %v", err)
+	}
+	if err := os.Mkdir("my dir", 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join("my dir", "child.txt"), []byte("x"), 0o600); err != nil {
+		t.Fatalf("write file: %v", err)
+	}
+
+	line := `:scp "my d`
+	got, _, _, ok := completeLine(line, len(line))
+	if !ok || got != `:scp "my dir/` {
+		t.Fatalf("got first completion=%q ok=%v", got, ok)
+	}
+	line = got + "ch"
+	got, _, _, ok = completeLine(line, len(line))
+	if !ok || got != `:scp "my dir/child.txt" ` {
+		t.Fatalf("got nested completion=%q ok=%v", got, ok)
+	}
+}
+
+func TestCompletionScannerHandlesQuotedPreviousArgument(t *testing.T) {
+	path, current, start := scanCompletionPrefix(`:scp "my file.txt" de`)
+	wantPath := []string{":scp", "my file.txt"}
+	if !reflect.DeepEqual(path, wantPath) || current != "de" || start != len(`:scp "my file.txt" `) {
+		t.Fatalf("got path=%v current=%q start=%d", path, current, start)
+	}
+}
+
+func TestSSHCompletionCompletesManagedHostAlias(t *testing.T) {
+	line := ":ssh pro"
+	got, _, _, ok := completeLineWithPrefixAndHosts(line, len(line), ":", []string{"prod", "staging"})
+	if !ok || got != ":ssh prod " {
+		t.Fatalf("got line=%q ok=%v", got, ok)
+	}
+}
+
+func TestSCPCompletionCompletesManagedHostAliasWithColon(t *testing.T) {
+	line := ":scp deploy.tar pro"
+	got, pos, _, ok := completeLineWithPrefixAndHosts(line, len(line), ":", []string{"prod"})
+	if !ok || got != ":scp deploy.tar prod:" || pos != len(got) {
+		t.Fatalf("got line=%q pos=%d ok=%v", got, pos, ok)
+	}
+}
+
+func TestSCPCompletionPreservesRemoteUser(t *testing.T) {
+	line := ":scp deploy.tar root@pro"
+	got, _, _, ok := completeLineWithPrefixAndHosts(line, len(line), ":", []string{"prod"})
+	if !ok || got != ":scp deploy.tar root@prod:" {
+		t.Fatalf("got line=%q ok=%v", got, ok)
+	}
+}
+
+func TestTransportHostCompletionSkipsOptionValuesAndPassArgs(t *testing.T) {
+	aliases := []string{"prod"}
+	if got := transportHostCandidates([]string{":ssh", "--auth"}, "pro", ":", aliases); len(got) != 0 {
+		t.Fatalf("got aliases for option value: %v", got)
+	}
+	if got := transportHostCandidates([]string{":ssh", "prod", "--"}, "pro", ":", aliases); len(got) != 0 {
+		t.Fatalf("got aliases for pass-through args: %v", got)
+	}
+}
+
 func TestSCPCompletionListsLocalPathsForEmptyArgument(t *testing.T) {
 	old, err := os.Getwd()
 	if err != nil {

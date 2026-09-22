@@ -16,6 +16,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/sszgr/secssh/vault"
 	"github.com/sszgr/secssh/workspace"
 	"golang.org/x/term"
 )
@@ -170,6 +171,7 @@ func runREPLTerminal(app *workspace.SessionManager, ref vaultRef, history *replH
 	var interrupted atomic.Bool
 	var eot atomic.Bool
 	newTerminal := func() *term.Terminal {
+		hostAliases := replManagedHostAliases(ref)
 		tt := term.NewTerminal(terminalRW{interrupted: &interrupted, eot: &eot}, replPrompt())
 		tt.History = history
 		syncTerminalSize(tt, fd)
@@ -177,7 +179,7 @@ func runREPLTerminal(app *workspace.SessionManager, ref vaultRef, history *replH
 			if key != '\t' {
 				return line, pos, false
 			}
-			newLine, newPos, list, ok := completeLineWithPrefix(line, pos, commandPrefix)
+			newLine, newPos, list, ok := completeLineWithPrefixAndHosts(line, pos, commandPrefix, hostAliases)
 			if list != "" {
 				_, _ = tt.Write([]byte("\n" + list + "\n"))
 			}
@@ -326,27 +328,17 @@ func completeLine(line string, pos int) (newLine string, newPos int, list string
 }
 
 func completeLineWithPrefix(line string, pos int, commandPrefix string) (newLine string, newPos int, list string, ok bool) {
+	return completeLineWithPrefixAndHosts(line, pos, commandPrefix, nil)
+}
+
+func completeLineWithPrefixAndHosts(line string, pos int, commandPrefix string, hostAliases []string) (newLine string, newPos int, list string, ok bool) {
 	commandPrefix = normalizeREPLPrefix(commandPrefix)
 	if pos < 0 || pos > len(line) {
 		return line, pos, "", false
 	}
 	prefix := line[:pos]
-	start := 0
-	if idx := strings.LastIndexAny(prefix, " \t"); idx >= 0 {
-		start = idx + 1
-	}
-	atNewToken := len(prefix) > 0 && (prefix[len(prefix)-1] == ' ' || prefix[len(prefix)-1] == '\t')
-	current := ""
-	if !atNewToken {
-		current = prefix[start:]
-	}
-
-	parts := strings.Fields(prefix)
-	path := parts
-	if !atNewToken && len(path) > 0 {
-		path = path[:len(path)-1]
-	}
-	cands := completionCandidatesWithPrefix(path, current, commandPrefix)
+	path, current, start := scanCompletionPrefix(prefix)
+	cands := completionCandidatesWithPrefixAndHosts(path, current, commandPrefix, hostAliases)
 	if len(cands) == 0 && !strings.HasPrefix(prefix, commandPrefix) {
 		cands = hostCompletionCandidates(line, pos, path, current)
 	}
@@ -355,7 +347,8 @@ func completeLineWithPrefix(line string, pos int, commandPrefix string) (newLine
 	}
 	if len(cands) == 1 {
 		repl := cands[0]
-		newPrefix := prefix[:start] + repl
+		encoded := encodeCompletionCandidate(repl, !completionShouldAddSpace(repl))
+		newPrefix := prefix[:start] + encoded
 		result := newPrefix + line[pos:]
 		cursor := len(newPrefix)
 		if pos == len(line) && completionShouldAddSpace(repl) {
@@ -366,10 +359,90 @@ func completeLineWithPrefix(line string, pos int, commandPrefix string) (newLine
 	}
 	common := longestCommonPrefix(cands)
 	if common != "" && len(common) > len(current) {
-		newPrefix := prefix[:start] + common
+		newPrefix := prefix[:start] + encodeCompletionCandidate(common, true)
 		return newPrefix + line[pos:], len(newPrefix), "", true
 	}
 	return line, pos, strings.Join(cands, "  "), false
+}
+
+func scanCompletionPrefix(prefix string) (path []string, current string, start int) {
+	var token strings.Builder
+	inSingle := false
+	inDouble := false
+	escaped := false
+	tokenStarted := false
+	start = len(prefix)
+
+	flush := func() {
+		if !tokenStarted {
+			return
+		}
+		path = append(path, token.String())
+		token.Reset()
+		tokenStarted = false
+	}
+
+	for i, r := range prefix {
+		if escaped {
+			token.WriteRune(r)
+			escaped = false
+			continue
+		}
+		if r == '\\' && !inSingle {
+			if !tokenStarted {
+				start = i
+				tokenStarted = true
+			}
+			escaped = true
+			continue
+		}
+		if r == '\'' && !inDouble {
+			if !tokenStarted {
+				start = i
+				tokenStarted = true
+			}
+			inSingle = !inSingle
+			continue
+		}
+		if r == '"' && !inSingle {
+			if !tokenStarted {
+				start = i
+				tokenStarted = true
+			}
+			inDouble = !inDouble
+			continue
+		}
+		if !inSingle && !inDouble && (r == ' ' || r == '\t') {
+			flush()
+			start = i + 1
+			continue
+		}
+		if !tokenStarted {
+			start = i
+			tokenStarted = true
+		}
+		token.WriteRune(r)
+	}
+	if escaped {
+		token.WriteByte('\\')
+	}
+	if tokenStarted {
+		current = token.String()
+	} else {
+		current = ""
+	}
+	return path, current, start
+}
+
+func encodeCompletionCandidate(candidate string, keepQuoteOpen bool) string {
+	if !strings.ContainsAny(candidate, " \t\"'") && !strings.ContainsRune(candidate, '\\') {
+		return candidate
+	}
+	escaped := strings.NewReplacer(`\`, `\\`, `"`, `\"`).Replace(candidate)
+	if keepQuoteOpen {
+		return `"` + escaped
+	}
+	return `"` + escaped + `"`
 }
 
 func completionCandidates(path []string, current string) []string {
@@ -377,6 +450,10 @@ func completionCandidates(path []string, current string) []string {
 }
 
 func completionCandidatesWithPrefix(path []string, current, commandPrefix string) []string {
+	return completionCandidatesWithPrefixAndHosts(path, current, commandPrefix, nil)
+}
+
+func completionCandidatesWithPrefixAndHosts(path []string, current, commandPrefix string, hostAliases []string) []string {
 	commandPrefix = normalizeREPLPrefix(commandPrefix)
 	base := []string{}
 	if len(path) == 0 && !strings.HasPrefix(current, commandPrefix) {
@@ -471,12 +548,12 @@ func completionCandidatesWithPrefix(path []string, current, commandPrefix string
 
 	if isTransportCompletionPath(path, commandPrefix, current) {
 		paths := hostPathCandidates(current)
+		paths = append(paths, transportHostCandidates(path, current, commandPrefix, hostAliases)...)
 		if current == "" {
 			base = append(base, paths...)
-			base = uniqueSortedStrings(base)
-			return base
+			return uniqueSortedStrings(base)
 		}
-		return paths
+		return uniqueSortedStrings(paths)
 	}
 
 	if current == "" {
@@ -536,6 +613,97 @@ func isKnownTransportFlagValue(path []string) bool {
 	}
 }
 
+func transportHostCandidates(path []string, current, commandPrefix string, hostAliases []string) []string {
+	if len(path) == 0 || len(hostAliases) == 0 || strings.HasPrefix(current, "-") {
+		return nil
+	}
+	root := strings.TrimPrefix(path[0], commandPrefix)
+	position := transportPositionalIndex(path)
+	if position < 0 || ((root == "ssh" || root == "sftp") && position != 0) || (root == "scp" && position > 1) {
+		return nil
+	}
+
+	userPrefix := ""
+	hostPrefix := current
+	if at := strings.LastIndex(hostPrefix, "@"); at >= 0 {
+		userPrefix = hostPrefix[:at+1]
+		hostPrefix = hostPrefix[at+1:]
+	}
+	if strings.Contains(hostPrefix, ":") || strings.ContainsAny(hostPrefix, `/\\`) {
+		return nil
+	}
+
+	out := make([]string, 0, len(hostAliases))
+	for _, alias := range hostAliases {
+		if !strings.HasPrefix(strings.ToLower(alias), strings.ToLower(hostPrefix)) {
+			continue
+		}
+		candidate := userPrefix + alias
+		if root == "scp" {
+			candidate += ":"
+		}
+		out = append(out, candidate)
+	}
+	return uniqueSortedStrings(out)
+}
+
+func transportPositionalIndex(path []string) int {
+	position := 0
+	consumeValue := false
+	for _, arg := range path[1:] {
+		if consumeValue {
+			consumeValue = false
+			continue
+		}
+		switch arg {
+		case "--":
+			return -1
+		case "--auth", "--use-secret":
+			consumeValue = true
+		default:
+			if strings.HasPrefix(arg, "-") {
+				continue
+			}
+			position++
+		}
+	}
+	if consumeValue {
+		return -1
+	}
+	return position
+}
+
+func replManagedHostAliases(ref vaultRef) []string {
+	password, ok := workspace.GetVaultPassword(ref.Path, time.Now())
+	if !ok {
+		return nil
+	}
+	defer func() {
+		for i := range password {
+			password[i] = 0
+		}
+	}()
+	_, payload, err := vault.Load(ref.Path, password)
+	if err != nil {
+		return nil
+	}
+	seen := make(map[string]struct{}, len(payload.Machines)+len(payload.Hosts))
+	for alias := range payload.Machines {
+		seen[alias] = struct{}{}
+	}
+	for alias := range payload.Hosts {
+		seen[alias] = struct{}{}
+	}
+	out := make([]string, 0, len(seen))
+	for alias := range seen {
+		if alias = strings.TrimSpace(alias); alias != "" {
+			out = append(out, alias)
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
 func prefixedCommandCandidates(commandPrefix string) []string {
 	commands := []string{"unlock", "lock", "status", "ssh", "scp", "sftp", "history", "config", "key", "secret", "host", "passwd", "crypto", "version", "help", "exit", "quit"}
 	out := make([]string, 0, len(commands))
@@ -553,7 +721,7 @@ func normalizeREPLPrefix(commandPrefix string) string {
 }
 
 func completionShouldAddSpace(candidate string) bool {
-	return !strings.HasSuffix(candidate, "/") && !strings.HasSuffix(candidate, "\\")
+	return !strings.HasSuffix(candidate, "/") && !strings.HasSuffix(candidate, "\\") && !strings.HasSuffix(candidate, ":")
 }
 
 func replPrompt() string {
@@ -817,11 +985,11 @@ func markDirectoryPathCandidates(cands []string) []string {
 
 func markDirectoryPathCandidate(candidate string) string {
 	if strings.HasSuffix(candidate, "/") || strings.HasSuffix(candidate, "\\") {
-		return candidate
+		return filepath.ToSlash(candidate)
 	}
 	st, err := os.Stat(expandUserPathForStat(candidate))
 	if err != nil || !st.IsDir() {
-		return candidate
+		return filepath.ToSlash(candidate)
 	}
 	return filepath.ToSlash(candidate) + "/"
 }
